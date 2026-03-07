@@ -6,6 +6,7 @@ import wave
 
 from .constants import (
     AUDIO_CHUNK_SIZE,
+    SAMPLE_WIDTH_BYTES,
     SILENCE_RMS_THRESHOLD,
     pyaudio,
 )
@@ -153,7 +154,7 @@ class AudioCapture:
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(channels)
-            wf.setsampwidth(2)
+            wf.setsampwidth(SAMPLE_WIDTH_BYTES)
             wf.setframerate(sample_rate)
             wf.writeframes(b"".join(frames))
         return buf.getvalue()

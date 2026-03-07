@@ -1,5 +1,5 @@
 """Voice Activity Detection"""
-from .constants import WEBRTCVAD_AVAILABLE, _webrtcvad
+from .constants import SAMPLE_WIDTH_BYTES, WEBRTCVAD_AVAILABLE, _webrtcvad
 from .audio_utils import is_silent_pcm
 
 
@@ -9,7 +9,7 @@ class VoiceActivityDetector:
 
     def __init__(self, sample_rate: int, aggressiveness: int = 2):
         self._sr = sample_rate
-        self._frame_bytes = int(sample_rate * self.FRAME_MS / 1000) * 2
+        self._frame_bytes = int(sample_rate * self.FRAME_MS / 1000) * SAMPLE_WIDTH_BYTES
         if WEBRTCVAD_AVAILABLE and sample_rate in (8000, 16000, 32000, 48000):
             self._vad = _webrtcvad.Vad(aggressiveness)
         else:

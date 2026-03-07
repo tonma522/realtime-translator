@@ -3,16 +3,16 @@ import array
 import logging
 import math
 
-from .constants import SILENCE_RMS_THRESHOLD
+from .constants import SAMPLE_WIDTH_BYTES, SILENCE_RMS_THRESHOLD
 
 
 def is_silent_pcm(frames: list[bytes], threshold: int = SILENCE_RMS_THRESHOLD) -> bool:
     """生PCMフレームのRMS振幅がthreshold以下ならTrue"""
     pcm = b"".join(frames)
-    n = len(pcm) // 2
+    n = len(pcm) // SAMPLE_WIDTH_BYTES
     if n == 0:
         return True
-    samples = array.array("h", pcm[:n * 2])
+    samples = array.array("h", pcm[:n * SAMPLE_WIDTH_BYTES])
     rms = math.sqrt(sum(s * s for s in samples) / n)
     logging.debug("[VAD] RMS=%.1f threshold=%d", rms, threshold)
     return rms < threshold

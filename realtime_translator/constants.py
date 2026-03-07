@@ -39,6 +39,7 @@ API_QUEUE_MAXSIZE = 3
 AUDIO_CHUNK_SIZE = 1024
 SILENCE_RMS_THRESHOLD = 200      # ループバック向け
 MIC_SILENCE_RMS_THRESHOLD = 500  # マイク誤検知防止
+SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM = 2 bytes per sample
 SILENCE_SENTINEL = "(無音)"
 
 STREAM_LANGS: dict[str, tuple[str, str]] = {

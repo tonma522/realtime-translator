@@ -259,11 +259,11 @@ Three independent reviewers analyzed the entire codebase from different perspect
 
 | Task | Finding | Files | Effort |
 |------|---------|-------|--------|
-| 4.1 | L1 | `constants.py`, `audio.py`, `vad.py`, `audio_utils.py` | Trivial — SAMPLE_WIDTH_BYTES constant |
+| 4.1 | L1 | `constants.py`, `audio.py`, `vad.py`, `audio_utils.py` | ~~Trivial — SAMPLE_WIDTH_BYTES constant~~ DONE (2026-03-08): Defined SAMPLE_WIDTH_BYTES = 2 in constants.py; replaced all sample-width literal 2s in audio.py, vad.py, audio_utils.py |
 | 4.2 | L4 | `audio.py` | Medium — strategy pattern for capture modes |
 | 4.3 | L7 | `api.py` | ~~Small — Japanese error message mapping~~ DONE (2026-03-08): Added `_localize_error()` helper with regex patterns mapping 429/rate-limit, 401/403/auth, 500/server, timeout errors to Japanese; applied at both `except` blocks in `_call_api`; unknown errors pass through unchanged |
 | 4.4 | M12 | `app.py` | ~~Small — API key validation before start~~ DONE (2026-03-08): Added lightweight format check in `_start_inner` — warns via logging if key length != 39 or doesn't start with "AI"; non-blocking, proceeds with startup |
-| 4.5 | L11 | `app.py` | Trivial — bounded queue drain |
+| 4.5 | L11 | `app.py` | ~~Trivial — bounded queue drain~~ DONE (2026-03-08): Replaced `while not empty()` with bounded `for _ in range(1000)` loop in _stop() |
 | 4.6 | C1 | `tests/` | Medium — app.py controller tests (after extraction) |
 
 **Demo**: Full test suite 80+ tests, 75%+ coverage.
