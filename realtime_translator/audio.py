@@ -1,4 +1,5 @@
 """音声キャプチャ"""
+import array
 import io
 import logging
 import math
@@ -156,7 +157,7 @@ class AudioCapture:
         n = len(pcm) // 2
         if n == 0:
             return True
-        samples = struct.unpack(f"<{n}h", pcm[:n * 2])
+        samples = array.array("h", pcm[:n * 2])
         rms = math.sqrt(sum(s * s for s in samples) / n)
         logging.debug("[VAD] RMS=%.1f threshold=%d", rms, threshold)
         return rms < threshold
