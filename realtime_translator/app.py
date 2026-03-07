@@ -319,8 +319,15 @@ class TranslatorApp:
 
             threshold = MIC_SILENCE_RMS_THRESHOLD if stream_id == "speak" else SILENCE_RMS_THRESHOLD
             ptt_ev = self._ptt_event if (stream_id == "speak" and ptt_enabled) else None
+
+            def make_error_cb(sid: str):
+                def _err_cb(msg: str):
+                    self._ui_queue.put(("error", sid, msg))
+                return _err_cb
+
             cap = AudioCapture(idx, chunk_sec, cb, stream_id, pa=self._pa,
-                               ptt_event=ptt_ev, use_vad=use_vad, silence_threshold=threshold)
+                               ptt_event=ptt_ev, use_vad=use_vad, silence_threshold=threshold,
+                               error_callback=make_error_cb(stream_id))
             cap.start()
             setattr(self, f"_capture_{stream_id}", cap)
 
@@ -417,25 +424,28 @@ class TranslatorApp:
         try:
             while True:
                 item = self._ui_queue.get_nowait()
-                kind = item[0]
-                if kind == "partial_start":
-                    _, stream_id, ts = item
-                    self._on_partial_start(stream_id, ts)
-                elif kind == "partial":
-                    _, stream_id, text = item
-                    self._on_partial(stream_id, text)
-                elif kind == "partial_end":
-                    _, stream_id = item
-                    self._on_partial_end(stream_id)
-                elif kind == "transcript":
-                    _, stream_id, ts, text = item
-                    self._on_transcript(stream_id, ts, text)
-                elif kind == "error":
-                    _, stream_id, msg = item
-                    self._append_error(f"[{stream_id}] {msg}")
-                elif kind == "status":
-                    _, msg = item
-                    self._status_var.set(f"状態: {msg}")
+                try:
+                    kind = item[0]
+                    if kind == "partial_start":
+                        _, stream_id, ts = item
+                        self._on_partial_start(stream_id, ts)
+                    elif kind == "partial":
+                        _, stream_id, text = item
+                        self._on_partial(stream_id, text)
+                    elif kind == "partial_end":
+                        _, stream_id = item
+                        self._on_partial_end(stream_id)
+                    elif kind == "transcript":
+                        _, stream_id, ts, text = item
+                        self._on_transcript(stream_id, ts, text)
+                    elif kind == "error":
+                        _, stream_id, msg = item
+                        self._append_error(f"[{stream_id}] {msg}")
+                    elif kind == "status":
+                        _, msg = item
+                        self._status_var.set(f"状態: {msg}")
+                except Exception:
+                    logging.exception("キューアイテム処理エラー: %r", item)
         except queue.Empty:
             pass
         self.root.after(100, self._poll_queue)
@@ -521,8 +531,7 @@ class TranslatorApp:
         if not config:
             return
         self._api_key_var.set(config.get("api_key", ""))
-        interval = config.get("interval", 5)
-        self._interval_var.set(interval if interval in (3, 5, 8) else 5)
+        self._interval_var.set(config.get("interval", 5))
         ctx = config.get("context", "")
         if ctx:
             self._context_text.delete("1.0", "end")
@@ -542,7 +551,10 @@ class TranslatorApp:
 
     def on_close(self) -> None:
         self.root.withdraw()
-        self._save_config()
+        try:
+            self._save_config()
+        except Exception:
+            logging.exception("on_close での設定保存に失敗")
         self._stop()
         if self._pa:
             self._pa.terminate()

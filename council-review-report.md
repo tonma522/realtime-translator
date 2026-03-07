@@ -218,9 +218,9 @@ Three independent reviewers analyzed the entire codebase from different perspect
 
 | Task | Finding | Files | Effort |
 |------|---------|-------|--------|
-| 1.1 | H2 | `app.py` | Trivial — wrap _poll_queue inner loop in try/except |
-| 1.2 | M2 | `app.py` | Trivial — wrap _save_config in try/except in on_close |
-| 1.3 | H1 | `audio.py`, `app.py` | Small — send error to UI queue on stream failure |
+| 1.1 | H2 | `app.py` | ~~Trivial — wrap _poll_queue inner loop in try/except~~ DONE (2026-03-08): Wrapped inner loop body in try/except; exceptions logged with item repr; root.after always reached |
+| 1.2 | M2 | `app.py` | ~~Trivial — wrap _save_config in try/except in on_close~~ DONE (2026-03-08): Wrapped _save_config() in on_close with try/except; _stop() and pa.terminate() always execute |
+| 1.3 | H1 | `audio.py`, `app.py` | ~~Small — send error to UI queue on stream failure~~ DONE (2026-03-08): Added error_callback param to AudioCapture; stream errors sent to UI queue as ("error", stream_id, msg); existing logging preserved |
 | 1.4 | M1 | `config.py` | ~~Trivial — `data = dict(data)` at top of save_config~~ DONE (2026-03-08): Added shallow copy at top of save_config |
 | 1.5 | H4 | `config.py` | ~~Small — restrict file permissions on JSON fallback~~ DONE (2026-03-08): Added `_restrict_file_permissions()` helper, called after writing config; graceful fallback on error |
 | 1.6 | M9 | `constants.py` | ~~Trivial — change LOG_PATH to Path.home()~~ DONE (2026-03-08): Changed to `Path.home() / ".realtime_translator.log"` |

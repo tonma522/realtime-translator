@@ -20,7 +20,8 @@ class AudioCapture:
                  label: str = "audio", pa=None,
                  ptt_event: threading.Event | None = None,
                  use_vad: bool = False,
-                 silence_threshold: int = SILENCE_RMS_THRESHOLD):
+                 silence_threshold: int = SILENCE_RMS_THRESHOLD,
+                 error_callback=None):
         self.device_index = device_index
         self.chunk_seconds = chunk_seconds
         self.callback = callback
@@ -29,6 +30,7 @@ class AudioCapture:
         self._ptt_event = ptt_event
         self._use_vad = use_vad
         self._silence_threshold = silence_threshold
+        self._error_callback = error_callback
         self._running = False
         self._thread: threading.Thread | None = None
 
@@ -129,8 +131,15 @@ class AudioCapture:
                                     logging.exception("[%s] callback error (continuous)", self.label)
                             frames = []
                             total_frames = 0
-                except Exception:
+                except Exception as exc:
                     logging.exception("[%s] audio stream error", self.label)
+                    if self._error_callback is not None:
+                        try:
+                            self._error_callback(
+                                f"音声ストリームエラー ({self.label}): {exc}"
+                            )
+                        except Exception:
+                            logging.exception("[%s] error_callback failed", self.label)
                     break
 
             stream.stop_stream()
