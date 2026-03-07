@@ -49,18 +49,33 @@ class TranslatorApp:
         self._saved_mic_name: str = ""
         self._running = False
         self._ptt_event = threading.Event()
-        self._pa = pyaudio.PyAudio() if PYAUDIO_AVAILABLE else None
+        self._pa = None
 
         try:
             self._build_ui()
             self._load_config()
-            self._refresh_devices()
             self._poll_queue()
+            # Defer audio initialization so the window is visible first
+            self.root.after(1, self._deferred_init)
         except Exception:
             if self._pa:
                 self._pa.terminate()
                 self._pa = None
             raise
+
+    def _deferred_init(self) -> None:
+        """Initialize PyAudio and populate device lists after the window is visible."""
+        self._status_var.set("状態: 初期化中...")
+        self.root.update_idletasks()
+        try:
+            if PYAUDIO_AVAILABLE:
+                self._pa = pyaudio.PyAudio()
+            self._refresh_devices()
+            self._status_var.set("状態: 待機中")
+        except Exception as e:
+            logging.exception("音声デバイス初期化エラー")
+            self._status_var.set("状態: 初期化エラー")
+            self._append_error(f"音声デバイス初期化エラー: {e}")
 
     # ─────────────────────────── UI構築 ───────────────────────────
 
@@ -325,7 +340,7 @@ class TranslatorApp:
                     self._ui_queue.put(("error", sid, msg))
                 return _err_cb
 
-            cap = AudioCapture(idx, chunk_sec, cb, stream_id, pa=self._pa,
+            cap = AudioCapture(idx, chunk_sec, cb, stream_id,
                                ptt_event=ptt_ev, use_vad=use_vad, silence_threshold=threshold,
                                error_callback=make_error_cb(stream_id))
             cap.start()
@@ -356,19 +371,41 @@ class TranslatorApp:
         for event in _PTT_BINDINGS:
             self.root.unbind(event)
         self._ptt_btn.config(state="disabled", text="🎙 録音 (押して話す)", bg="#FF8C00")
+
+        # Phase 1: Signal ALL workers to stop (so they begin shutting down in parallel)
+        captures = []
         for attr in ("_capture_listen", "_capture_speak"):
             cap = getattr(self, attr)
             if cap:
-                cap.stop()
+                cap._running = False
+                captures.append(cap)
             setattr(self, attr, None)
-        if self._whisper_worker:
-            self._whisper_worker.stop()
+
+        whisper = self._whisper_worker
+        if whisper:
+            whisper._running = False
+            whisper._req_queue.put(None)  # sentinel
             self._whisper_worker = None
+
+        api_workers = []
         for w in (self._api_worker_listen, self._api_worker_speak):
             if w:
-                w.stop()
+                w._running = False
+                w._req_queue.put(None)  # sentinel
+                api_workers.append(w)
         self._api_worker_listen = None
         self._api_worker_speak = None
+
+        # Phase 2: Join all threads (they are already stopping in parallel)
+        for cap in captures:
+            if cap._thread:
+                cap._thread.join(timeout=3)
+                cap._thread = None
+        if whisper and whisper._thread:
+            whisper._thread.join(timeout=10)
+        for w in api_workers:
+            if w._thread:
+                w._thread.join(timeout=10)
         while not self._ui_queue.empty():
             try:
                 self._ui_queue.get_nowait()
@@ -448,19 +485,19 @@ class TranslatorApp:
                     logging.exception("キューアイテム処理エラー: %r", item)
         except queue.Empty:
             pass
-        self.root.after(100, self._poll_queue)
+        self.root.after(50, self._poll_queue)
 
     def _on_partial_start(self, stream_id: str, ts: str) -> None:
         label, tag = _STREAM_META[stream_id]
         with self._editable_result():
             mark = self._result_text.index("end-1c")
             self._result_text.insert("end", f"[{ts}] {label}\n", tag)
-        self._stream_buffers[stream_id] = {"text": "", "mark": mark}
+        self._stream_buffers[stream_id] = {"chunks": [], "mark": mark}
 
     def _on_partial(self, stream_id: str, text: str) -> None:
         if stream_id not in self._stream_buffers:
             return
-        self._stream_buffers[stream_id]["text"] += text
+        self._stream_buffers[stream_id]["chunks"].append(text)
         with self._editable_result():
             self._result_text.insert("end", text)
 
@@ -468,8 +505,9 @@ class TranslatorApp:
         buf = self._stream_buffers.pop(stream_id, None)
         if buf is None:
             return
+        full_text = "".join(buf["chunks"])
         with self._editable_result():
-            if SILENCE_SENTINEL in buf["text"]:
+            if SILENCE_SENTINEL in full_text:
                 self._result_text.delete(buf["mark"], "end")
             else:
                 self._result_text.insert("end", "\n" + "─" * 50 + "\n", "separator")

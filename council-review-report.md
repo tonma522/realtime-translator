@@ -245,12 +245,12 @@ Three independent reviewers analyzed the entire codebase from different perspect
 
 | Task | Finding | Files | Effort |
 |------|---------|-------|--------|
-| 3.1 | H3 | `app.py`, `audio.py` | Medium — each AudioCapture creates own PyAudio |
-| 3.2 | M6 | `app.py` | Medium — deferred PyAudio init with status feedback |
-| 3.3 | M3 | `app.py` | Small — parallel worker shutdown |
+| 3.1 | H3 | `app.py`, `audio.py` | ~~Medium — each AudioCapture creates own PyAudio~~ DONE (2026-03-08): Removed pa=self._pa from AudioCapture constructors; each capture creates own PyAudio instance via existing own_pa path; self._pa kept only for device enumeration on main thread |
+| 3.2 | M6 | `app.py` | ~~Medium — deferred PyAudio init with status feedback~~ DONE (2026-03-08): PyAudio init deferred via root.after(1, _deferred_init); window visible before audio init; "初期化中..." status shown during init |
+| 3.3 | M3 | `app.py` | ~~Small — parallel worker shutdown~~ DONE (2026-03-08): _stop() rewritten to signal all workers (set _running=False + sentinel) in phase 1, then join all threads in phase 2; worst-case shutdown reduced from 26s to ~10s |
 | 3.4 | M5 | `api.py`, `whisper_stt.py` | ~~Small — extract shared helpers~~ DONE (2026-03-08): Created `worker_utils.py` with `enqueue_dropping_oldest()` and `stop_worker_thread()` helpers; refactored both ApiWorker and WhisperWorker to use them |
-| 3.5 | M7 | `app.py` | Trivial — reduce polling to 50ms |
-| 3.6 | M8 | `app.py` | Small — list-based string accumulation |
+| 3.5 | M7 | `app.py` | ~~Trivial — reduce polling to 50ms~~ DONE (2026-03-08): Changed root.after(100) to root.after(50) in _poll_queue |
+| 3.6 | M8 | `app.py` | ~~Small — list-based string accumulation~~ DONE (2026-03-08): _stream_buffers["text"] string replaced with ["chunks"] list; append per partial, join on partial_end |
 
 **Demo**: App starts with visible window in <1s, shows "Initializing..." status.
 
