@@ -1,7 +1,6 @@
 """エントリポイント: python -m realtime_translator"""
 import logging
 import tkinter as tk
-from pathlib import Path
 
 from .constants import LOG_PATH
 from .app import TranslatorApp

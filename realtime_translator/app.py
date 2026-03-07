@@ -521,7 +521,8 @@ class TranslatorApp:
         if not config:
             return
         self._api_key_var.set(config.get("api_key", ""))
-        self._interval_var.set(config.get("interval", 5))
+        interval = config.get("interval", 5)
+        self._interval_var.set(interval if interval in (3, 5, 8) else 5)
         ctx = config.get("context", "")
         if ctx:
             self._context_text.delete("1.0", "end")
