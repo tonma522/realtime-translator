@@ -32,7 +32,7 @@ except ImportError:
     WHISPER_AVAILABLE = False
 
 CONFIG_PATH = Path.home() / ".realtime_translator_config.json"
-LOG_PATH = Path(__file__).parent.parent / "realtime_translator.log"
+LOG_PATH = Path.home() / ".realtime_translator.log"
 GEMINI_MODEL = "gemini-2.5-flash"
 MIN_API_INTERVAL_SEC = 4.0   # Free tier 15RPM
 API_QUEUE_MAXSIZE = 3
