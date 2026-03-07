@@ -232,7 +232,7 @@ Three independent reviewers analyzed the entire codebase from different perspect
 
 | Task | Finding | Files | Effort |
 |------|---------|-------|--------|
-| 2.1 | C1 | `tests/test_api.py` | Medium — mock genai client, test rate limiting, phase routing, streaming, errors |
+| 2.1 | C1 | `tests/test_api.py` | ~~Medium — mock genai client, test rate limiting, phase routing, streaming, errors~~ DONE (2026-03-08): 30 tests covering lifecycle, queue overflow, phase 0/1/2 streaming, silence sentinel filtering, rate limiting, error handling, stop sentinel |
 | 2.2 | C1 | `tests/test_whisper_stt.py` | Medium — mock WhisperModel, test pipeline |
 | 2.3 | C1 | `tests/test_devices.py` | Small — mock PyAudio, test filtering |
 | 2.4 | M10 | `tests/test_config.py` | Small — test JSON→keyring migration path |
