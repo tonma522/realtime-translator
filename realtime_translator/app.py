@@ -275,6 +275,14 @@ class TranslatorApp:
             self._append_error("Gemini APIキーを入力してください。")
             return
 
+        # Lightweight API key format validation (M12)
+        if len(api_key) != 39 or not api_key.startswith("AI"):
+            logging.warning(
+                "APIキーの形式が通常と異なります (長さ=%d, 先頭='%s')。"
+                "Gemini APIキーは通常 'AI' で始まる39文字です。",
+                len(api_key), api_key[:2],
+            )
+
         enable_listen = self._enable_listen_var.get()
         enable_speak = self._enable_speak_var.get()
         if not enable_listen and not enable_speak:
@@ -406,7 +414,7 @@ class TranslatorApp:
         for w in api_workers:
             if w._thread:
                 w._thread.join(timeout=10)
-        while not self._ui_queue.empty():
+        for _ in range(1000):
             try:
                 self._ui_queue.get_nowait()
             except queue.Empty:
