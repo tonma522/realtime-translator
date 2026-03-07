@@ -9,5 +9,5 @@ python -c "import pyaudiowpatch" > nul 2>&1
 if errorlevel 1 ( echo 依存パッケージをインストールします... & pip install -r requirements.txt )
 python -c "import google.genai" > nul 2>&1
 if errorlevel 1 ( pip install -r requirements.txt )
-python translator.py
+python -m realtime_translator
 if errorlevel 1 ( echo [エラー] アプリがエラーで終了しました。 & pause )
