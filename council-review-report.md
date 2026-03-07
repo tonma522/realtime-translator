@@ -248,7 +248,7 @@ Three independent reviewers analyzed the entire codebase from different perspect
 | 3.1 | H3 | `app.py`, `audio.py` | Medium — each AudioCapture creates own PyAudio |
 | 3.2 | M6 | `app.py` | Medium — deferred PyAudio init with status feedback |
 | 3.3 | M3 | `app.py` | Small — parallel worker shutdown |
-| 3.4 | M5 | `api.py`, `whisper_stt.py` | Small — extract shared helpers |
+| 3.4 | M5 | `api.py`, `whisper_stt.py` | ~~Small — extract shared helpers~~ DONE (2026-03-08): Created `worker_utils.py` with `enqueue_dropping_oldest()` and `stop_worker_thread()` helpers; refactored both ApiWorker and WhisperWorker to use them |
 | 3.5 | M7 | `app.py` | Trivial — reduce polling to 50ms |
 | 3.6 | M8 | `app.py` | Small — list-based string accumulation |
 

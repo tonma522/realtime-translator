@@ -1,6 +1,5 @@
 """Whisper STT (ローカル文字起こし)"""
 import io
-import logging
 import queue
 import threading
 from datetime import datetime
@@ -8,6 +7,7 @@ from datetime import datetime
 from .constants import WHISPER_AVAILABLE, WhisperModel
 from .api import ApiRequest, ApiWorker
 from .prompts import build_translation_prompt
+from .worker_utils import enqueue_dropping_oldest, stop_worker_thread
 
 
 class WhisperTranscriber:
@@ -53,26 +53,11 @@ class WhisperWorker:
     def submit(self, wav_bytes: bytes, stream_id: str) -> None:
         if not self._running:
             return
-        if self._req_queue.full():
-            try:
-                self._req_queue.get_nowait()
-                logging.debug("[WhisperWorker] queue full, dropped oldest request")
-            except queue.Empty:
-                pass
-        try:
-            self._req_queue.put_nowait((wav_bytes, stream_id))
-        except queue.Full:
-            pass
+        enqueue_dropping_oldest(self._req_queue, (wav_bytes, stream_id), "WhisperWorker")
 
     def stop(self) -> None:
         self._running = False
-        try:
-            self._req_queue.put_nowait(None)
-        except queue.Full:
-            pass
-        if self._thread:
-            self._thread.join(timeout=15)
-            self._thread = None
+        self._thread = stop_worker_thread(self._req_queue, self._thread, timeout=15)
 
     def _worker_loop(self) -> None:
         self._ui_queue.put(("status", "Whisper準備中..."))
