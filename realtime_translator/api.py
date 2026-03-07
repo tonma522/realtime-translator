@@ -15,6 +15,27 @@ from .constants import (
 from .prompts import build_translation_prompt
 from .worker_utils import enqueue_dropping_oldest, stop_worker_thread
 
+import re
+
+_ERROR_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"429|rate.?limit|exhausted", re.IGNORECASE),
+     "APIレート制限に達しました。しばらくお待ちください。"),
+    (re.compile(r"40[13]|unauthorized|forbidden|invalid.?api.?key", re.IGNORECASE),
+     "APIキーが無効です。確認してください。"),
+    (re.compile(r"500|internal.?server.?error", re.IGNORECASE),
+     "Geminiサーバーエラーが発生しました。"),
+    (re.compile(r"timeout|deadline", re.IGNORECASE),
+     "API応答がタイムアウトしました。"),
+]
+
+
+def _localize_error(msg: str) -> str:
+    """Map common Gemini API error messages to Japanese for UI display."""
+    for pattern, ja_msg in _ERROR_PATTERNS:
+        if pattern.search(msg):
+            return ja_msg
+    return msg
+
 
 @dataclass
 class ApiRequest:
@@ -122,11 +143,11 @@ class ApiWorker:
                             started = True
                         self._ui_queue.put(("partial", req.stream_id, text))
                 except Exception as e:
-                    self._ui_queue.put(("error", req.stream_id, str(e)))
+                    self._ui_queue.put(("error", req.stream_id, _localize_error(str(e))))
                 finally:
                     if started:
                         self._ui_queue.put(("partial_end", req.stream_id))
         except Exception as e:
-            self._ui_queue.put(("error", req.stream_id, str(e)))
+            self._ui_queue.put(("error", req.stream_id, _localize_error(str(e))))
         finally:
             self._last_call_time = time.monotonic()
