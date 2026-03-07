@@ -56,6 +56,7 @@ class WhisperWorker:
         if self._req_queue.full():
             try:
                 self._req_queue.get_nowait()
+                logging.debug("[WhisperWorker] queue full, dropped oldest request")
             except queue.Empty:
                 pass
         try:

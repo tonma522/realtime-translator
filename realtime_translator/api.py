@@ -55,6 +55,7 @@ class ApiWorker:
         if self._req_queue.full():
             try:
                 self._req_queue.get_nowait()
+                logging.debug("[%s] queue full, dropped oldest request", self._label)
             except queue.Empty:
                 pass
         try:

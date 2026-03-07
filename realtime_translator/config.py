@@ -66,34 +66,20 @@ def load_config() -> dict:
         logging.exception("設定読み込みに失敗")
         config = {}
 
-    # keyringからAPIキーを取得
-    kr_key = load_api_key()
-    if kr_key:
-        # 旧JSON内のapi_keyがあれば移行して削除
-        if "api_key" in config:
-            _migrate_api_key(config)
-        config["api_key"] = kr_key
-    elif "api_key" in config:
-        # keyring未使用 or 初回: JSONのキーをkeyringに移行
-        _migrate_api_key(config)
-        config["api_key"] = config.get("_migrated_key", config.get("api_key", ""))
-        config.pop("_migrated_key", None)
-
-    return config
-
-
-def _migrate_api_key(config: dict) -> None:
-    """旧JSONのapi_keyをkeyringに移行し、JSONから削除"""
-    old_key = config.pop("api_key", "")
-    if old_key and _KEYRING_AVAILABLE:
-        save_api_key(old_key)
+    # 旧JSONにapi_keyがあればkeyringに移行
+    json_key = config.pop("api_key", "")
+    if json_key and _KEYRING_AVAILABLE:
+        save_api_key(json_key)
         logging.info("APIキーをkeyringに移行しました")
-        # JSONファイルを更新してapi_keyを除去
         try:
             CONFIG_PATH.write_text(
                 json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         except Exception:
             logging.exception("移行後の設定保存に失敗")
-    elif old_key:
-        config["_migrated_key"] = old_key
+
+    # keyringからAPIキーを取得（なければJSON由来のキーをフォールバック）
+    kr_key = load_api_key()
+    config["api_key"] = kr_key or json_key
+
+    return config

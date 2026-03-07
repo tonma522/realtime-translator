@@ -1,9 +1,6 @@
 """音声キャプチャ"""
-import array
 import io
 import logging
-import math
-import struct
 import threading
 import wave
 
@@ -12,6 +9,7 @@ from .constants import (
     SILENCE_RMS_THRESHOLD,
     pyaudio,
 )
+from .audio_utils import is_silent_pcm
 from .vad import VoiceActivityDetector
 
 
@@ -84,7 +82,7 @@ class AudioCapture:
                             frames.append(data)
                             was_ptt_active = True
                         elif was_ptt_active:
-                            if frames and not self._is_silent_pcm(frames, self._silence_threshold):
+                            if frames and not is_silent_pcm(frames, self._silence_threshold):
                                 wav_bytes = self._to_wav(frames, channels, sample_rate)
                                 try:
                                     self.callback(wav_bytes)
@@ -123,7 +121,7 @@ class AudioCapture:
                         frames.append(data)
                         total_frames += AUDIO_CHUNK_SIZE
                         if total_frames >= frames_needed:
-                            if not self._is_silent_pcm(frames, self._silence_threshold):
+                            if not is_silent_pcm(frames, self._silence_threshold):
                                 wav_bytes = self._to_wav(frames, channels, sample_rate)
                                 try:
                                     self.callback(wav_bytes)
@@ -132,6 +130,7 @@ class AudioCapture:
                             frames = []
                             total_frames = 0
                 except Exception:
+                    logging.exception("[%s] audio stream error", self.label)
                     break
 
             stream.stop_stream()
@@ -150,14 +149,5 @@ class AudioCapture:
             wf.writeframes(b"".join(frames))
         return buf.getvalue()
 
-    @staticmethod
-    def _is_silent_pcm(frames: list[bytes], threshold: int = SILENCE_RMS_THRESHOLD) -> bool:
-        """生PCMフレームのRMS振幅がthreshold以下ならTrue"""
-        pcm = b"".join(frames)
-        n = len(pcm) // 2
-        if n == 0:
-            return True
-        samples = array.array("h", pcm[:n * 2])
-        rms = math.sqrt(sum(s * s for s in samples) / n)
-        logging.debug("[VAD] RMS=%.1f threshold=%d", rms, threshold)
-        return rms < threshold
+    # 後方互換: テスト等から AudioCapture._is_silent_pcm で呼べるように
+    _is_silent_pcm = staticmethod(is_silent_pcm)

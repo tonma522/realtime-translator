@@ -1,5 +1,6 @@
 """Voice Activity Detection"""
 from .constants import WEBRTCVAD_AVAILABLE, _webrtcvad
+from .audio_utils import is_silent_pcm
 
 
 class VoiceActivityDetector:
@@ -16,9 +17,7 @@ class VoiceActivityDetector:
 
     def is_speech(self, pcm_bytes: bytes) -> bool:
         if self._vad is None:
-            # RMS フォールバック: audio.py の _is_silent_pcm を遅延import
-            from .audio import AudioCapture
-            return not AudioCapture._is_silent_pcm([pcm_bytes])
+            return not is_silent_pcm([pcm_bytes])
         frame = pcm_bytes[:self._frame_bytes]
         if len(frame) < self._frame_bytes:
             return False

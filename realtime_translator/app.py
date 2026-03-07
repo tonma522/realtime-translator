@@ -50,10 +50,16 @@ class TranslatorApp:
         self._ptt_event = threading.Event()
         self._pa = pyaudio.PyAudio() if PYAUDIO_AVAILABLE else None
 
-        self._build_ui()
-        self._load_config()
-        self._refresh_devices()
-        self._poll_queue()
+        try:
+            self._build_ui()
+            self._load_config()
+            self._refresh_devices()
+            self._poll_queue()
+        except Exception:
+            if self._pa:
+                self._pa.terminate()
+                self._pa = None
+            raise
 
     # ─────────────────────────── UI構築 ───────────────────────────
 
