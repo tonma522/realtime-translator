@@ -10,6 +10,7 @@ from .constants import (
     GEMINI_MODEL,
     MIN_API_INTERVAL_SEC,
     API_QUEUE_MAXSIZE,
+    SILENCE_SENTINEL,
     genai_types,
 )
 from .prompts import build_translation_prompt
@@ -103,7 +104,7 @@ class ApiWorker:
                     if t:
                         chunks.append(t)
                 transcript = "".join(chunks).strip()
-                if transcript and "(無音)" not in transcript:
+                if transcript and SILENCE_SENTINEL not in transcript:
                     self._ui_queue.put(("transcript", req.stream_id, ts, transcript))
                     if self._running:
                         self.submit(ApiRequest(

@@ -39,6 +39,12 @@ API_QUEUE_MAXSIZE = 3
 AUDIO_CHUNK_SIZE = 1024
 SILENCE_RMS_THRESHOLD = 200      # ループバック向け
 MIC_SILENCE_RMS_THRESHOLD = 500  # マイク誤検知防止
+SILENCE_SENTINEL = "(無音)"
+
+STREAM_LANGS: dict[str, tuple[str, str]] = {
+    "listen": ("英語", "日本語"),
+    "speak":  ("日本語", "英語"),
+}
 
 _PTT_BINDINGS = ("<KeyPress-space>", "<KeyRelease-space>", "<FocusOut>")
 _STREAM_META: dict[str, tuple[str, str]] = {

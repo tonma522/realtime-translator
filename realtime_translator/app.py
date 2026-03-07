@@ -13,6 +13,7 @@ from .constants import (
     PYAUDIO_AVAILABLE,
     GENAI_AVAILABLE,
     WHISPER_AVAILABLE,
+    SILENCE_SENTINEL,
     pyaudio,
     genai,
     MIN_API_INTERVAL_SEC,
@@ -441,36 +442,27 @@ class TranslatorApp:
 
     def _on_partial_start(self, stream_id: str, ts: str) -> None:
         label, tag = _STREAM_META[stream_id]
-        self._result_text.config(state="normal")
-        mark = self._result_text.index("end-1c")
-        self._result_text.insert("end", f"[{ts}] {label}\n", tag)
-        self._result_text.see("end")
-        self._result_text.config(state="disabled")
+        with self._editable_result():
+            mark = self._result_text.index("end-1c")
+            self._result_text.insert("end", f"[{ts}] {label}\n", tag)
         self._stream_buffers[stream_id] = {"text": "", "mark": mark}
 
     def _on_partial(self, stream_id: str, text: str) -> None:
         if stream_id not in self._stream_buffers:
             return
         self._stream_buffers[stream_id]["text"] += text
-        self._result_text.config(state="normal")
-        self._result_text.insert("end", text)
-        self._result_text.see("end")
-        self._result_text.config(state="disabled")
+        with self._editable_result():
+            self._result_text.insert("end", text)
 
     def _on_partial_end(self, stream_id: str) -> None:
         buf = self._stream_buffers.pop(stream_id, None)
         if buf is None:
             return
-        accumulated = buf["text"]
-        if "(無音)" in accumulated:
-            self._result_text.config(state="normal")
-            self._result_text.delete(buf["mark"], "end")
-            self._result_text.config(state="disabled")
-        else:
-            self._result_text.config(state="normal")
-            self._result_text.insert("end", "\n" + "─" * 50 + "\n", "separator")
-            self._result_text.see("end")
-            self._result_text.config(state="disabled")
+        with self._editable_result():
+            if SILENCE_SENTINEL in buf["text"]:
+                self._result_text.delete(buf["mark"], "end")
+            else:
+                self._result_text.insert("end", "\n" + "─" * 50 + "\n", "separator")
 
     def _on_transcript(self, stream_id: str, ts: str, text: str) -> None:
         label, tag = _STREAM_META[stream_id]
