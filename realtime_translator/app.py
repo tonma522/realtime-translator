@@ -615,6 +615,8 @@ class TranslatorApp:
                 self._result_text.insert("end", "\n" + "─" * 50 + "\n", "separator")
 
     def _on_transcript(self, stream_id: str, ts: str, text: str) -> None:
+        if not self._show_original_var.get():
+            return
         self._flush_active_partials()
         label, tag, langs = _STREAM_META[stream_id]
         with self._editable_result():

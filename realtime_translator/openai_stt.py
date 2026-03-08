@@ -9,7 +9,7 @@ from .api import ApiRequest, ApiWorker
 from .constants import OPENAI_STT_DEFAULT_MODEL
 from .openai_llm import _localize_openai_error
 from .prompts import build_translation_prompt
-from .worker_utils import enqueue_dropping_oldest, send_stop_sentinel
+from .worker_utils import send_stop_sentinel
 
 
 class OpenAiSttWorker:
@@ -32,6 +32,7 @@ class OpenAiSttWorker:
         self._language = language
         self._context = context
         self._req_queue: queue.Queue = queue.Queue(maxsize=3)
+        self._queue_lock = threading.Lock()
         self._running = False
         self._thread: threading.Thread | None = None
         self._pending_requests = 0
@@ -55,12 +56,23 @@ class OpenAiSttWorker:
     def submit(self, wav_bytes: bytes, stream_id: str) -> None:
         if not self._running:
             return
-        self._pending_requests += 1
-        enqueue_dropping_oldest(self._req_queue, (wav_bytes, stream_id), "OpenAiSttWorker")
+        with self._queue_lock:
+            if self._req_queue.full():
+                try:
+                    self._req_queue.get_nowait()
+                    self._pending_requests = max(0, self._pending_requests - 1)
+                    logging.debug("[OpenAiSttWorker] queue full, dropped oldest")
+                except queue.Empty:
+                    pass
+            try:
+                self._req_queue.put_nowait((wav_bytes, stream_id))
+                self._pending_requests += 1
+            except queue.Full:
+                pass
 
     def signal_stop(self) -> None:
         self._running = False
-        send_stop_sentinel(self._req_queue)
+        send_stop_sentinel(self._req_queue, self._queue_lock)
 
     def join(self, timeout: float = 15) -> None:
         if self._thread:

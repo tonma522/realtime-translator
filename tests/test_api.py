@@ -737,5 +737,62 @@ class TestLabelParameter(unittest.TestCase):
         worker.stop()
 
 
+class TestPendingRequests(unittest.TestCase):
+    """pending_requests counter accuracy tests."""
+
+    def test_pending_requests_decrements_on_drop(self):
+        """Fill queue, submit extra → pending_requests == maxsize (not maxsize+1)."""
+        ui_q = queue.Queue()
+        worker = ApiWorker(ui_q, client=MagicMock(), min_interval_sec=0)
+        worker._running = True
+        for i in range(API_QUEUE_MAXSIZE):
+            worker.submit(ApiRequest(wav_bytes=b"x", prompt=f"p{i}", stream_id="listen"))
+        # Submit one more — should drop oldest and decrement
+        worker.submit(ApiRequest(wav_bytes=b"x", prompt="extra", stream_id="listen"))
+        self.assertEqual(worker._pending_requests, API_QUEUE_MAXSIZE)
+
+    def test_pending_requests_reaches_zero_after_processing(self):
+        """Submit items, let worker process → pending_requests == 0."""
+        client = _mock_client([_make_chunk("ok")])
+        ui_q = queue.Queue()
+        with patch("realtime_translator.api.genai_types") as mock_types:
+            mock_types.Part.from_bytes.return_value = "audio_part"
+            worker = ApiWorker(ui_q, client=client, min_interval_sec=0)
+            worker.start()
+            worker.submit(ApiRequest(wav_bytes=b"wav", prompt="p", stream_id="listen", phase=0))
+            time.sleep(0.5)
+            worker.stop()
+        self.assertEqual(worker._pending_requests, 0)
+
+class TestPhase1SelfSubmitFullQueue(unittest.TestCase):
+    """Phase 1 self-submit with full queue: pending_requests stays correct."""
+
+    def test_phase1_self_submit_with_full_queue(self):
+        client = MagicMock()
+        phase1_response = MagicMock()
+        phase1_response.text = "Hello world"
+        client.models.generate_content.return_value = phase1_response
+        phase2_chunks = [_make_chunk("translated")]
+        client.models.generate_content_stream.return_value = iter(phase2_chunks)
+        ui_q = queue.Queue()
+
+        with patch("realtime_translator.api.genai_types") as mock_types:
+            mock_types.Part.from_bytes.return_value = "audio_part"
+            worker = ApiWorker(ui_q, client=client, min_interval_sec=0)
+            worker.start()
+            # Fill the queue first
+            for i in range(API_QUEUE_MAXSIZE - 1):
+                worker.submit(ApiRequest(wav_bytes=b"x", prompt=f"filler{i}", stream_id="listen"))
+            # Submit phase 1 — it will self-submit phase 2, potentially when queue is full
+            worker.submit(ApiRequest(
+                wav_bytes=b"wav", prompt="stt", stream_id="listen", phase=1, context="ctx"
+            ))
+            time.sleep(2.0)
+            worker.stop()
+
+        # pending_requests should be 0 after all processing
+        self.assertEqual(worker._pending_requests, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

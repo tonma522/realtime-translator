@@ -272,5 +272,24 @@ class TestWorkerNotRunningGuard(unittest.TestCase):
         self.assertEqual(len(listen_w.submitted), 0)
 
 
+class TestPendingRequests(unittest.TestCase):
+    def test_pending_requests_decrements_on_drop(self):
+        w, _, _, _ = _make_worker()
+        w._running = True
+        w.submit(b"a", "listen")
+        w.submit(b"b", "listen")
+        w.submit(b"c", "listen")  # queue full (maxsize=3)
+        w.submit(b"d", "listen")  # drops oldest
+        self.assertEqual(w._pending_requests, 3)
+
+    def test_pending_requests_reaches_zero_after_processing(self):
+        client = _mock_client("Hello")
+        w, _, _, _ = _make_worker(client=client)
+        w.start()
+        w.submit(b"wav", "listen")
+        time.sleep(0.5)
+        w.stop()
+        self.assertEqual(w._pending_requests, 0)
+
 if __name__ == "__main__":
     unittest.main()

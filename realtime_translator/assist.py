@@ -25,6 +25,17 @@ def _next_seq() -> int:
         return _seq_counter
 
 
+class _StopSentinel:
+    """Sentinel that sorts after all real requests in PriorityQueue."""
+    def __lt__(self, other): return False
+    def __gt__(self, other): return not isinstance(other, _StopSentinel)
+    def __le__(self, other): return isinstance(other, _StopSentinel)
+    def __ge__(self, other): return True
+    def __eq__(self, other): return isinstance(other, _StopSentinel)
+
+_STOP = _StopSentinel()
+
+
 @dataclass(order=False)
 class AssistRequest:
     request_id: str
@@ -35,7 +46,9 @@ class AssistRequest:
     priority: int = 0  # 0=reply_assist (high), 1=minutes (low)
     seq: int = field(default_factory=_next_seq)
 
-    def __lt__(self, other: "AssistRequest") -> bool:
+    def __lt__(self, other) -> bool:
+        if isinstance(other, _StopSentinel):
+            return True  # real requests sort before _STOP
         return (self.priority, self.seq) < (other.priority, other.seq)
 
 
@@ -61,7 +74,7 @@ class AssistWorker:
         self._api_key = api_key
         self._min_interval_sec = min_interval_sec
         self._client_factory = client_factory
-        self._req_queue: queue.PriorityQueue[AssistRequest | None] = queue.PriorityQueue(maxsize=20)
+        self._req_queue: queue.PriorityQueue = queue.PriorityQueue(maxsize=20)
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_call_time = 0.0
@@ -99,9 +112,16 @@ class AssistWorker:
     def signal_stop(self) -> None:
         self._running = False
         try:
-            self._req_queue.put_nowait(None)
+            self._req_queue.put_nowait(_STOP)
         except queue.Full:
-            pass
+            try:
+                self._req_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._req_queue.put_nowait(_STOP)
+            except queue.Full:
+                pass
 
     def join(self, timeout: float = 10) -> None:
         if self._thread:
@@ -121,19 +141,20 @@ class AssistWorker:
 
     def _worker_loop(self) -> None:
         client = None
-        while self._running:
+        while True:
             try:
                 req = self._req_queue.get(timeout=0.5)
             except queue.Empty:
+                if not self._running:
+                    break
                 continue
-            if req is None:
+            if isinstance(req, _StopSentinel):
                 break
 
-            # Wait for all workers to be idle
-            while self._running and not self._is_idle():
-                time.sleep(0.5)
-            if not self._running:
-                break
+            # Wait for all workers to be idle (skip during shutdown)
+            if self._running:
+                while self._running and not self._is_idle():
+                    time.sleep(0.5)
 
             # Rate limiting
             elapsed = time.monotonic() - self._last_call_time

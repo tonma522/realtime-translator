@@ -13,7 +13,7 @@ from .constants import (
     SILENCE_SENTINEL,
 )
 from .prompts import build_translation_prompt
-from .worker_utils import enqueue_dropping_oldest, send_stop_sentinel
+from .worker_utils import send_stop_sentinel
 
 # phase=0/1 で音声入力が使えるモデル (既知)
 AUDIO_CAPABLE_MODELS: set[str] = {
@@ -82,6 +82,7 @@ class OpenAiLlmWorker:
         self._req_queue: queue.Queue[ApiRequest | None] = queue.Queue(
             maxsize=API_QUEUE_MAXSIZE
         )
+        self._queue_lock = threading.Lock()
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_audio_call_time = 0.0
@@ -111,12 +112,23 @@ class OpenAiLlmWorker:
     def submit(self, req: ApiRequest) -> None:
         if not self._running:
             return
-        self._pending_requests += 1
-        enqueue_dropping_oldest(self._req_queue, req, self._label)
+        with self._queue_lock:
+            if self._req_queue.full():
+                try:
+                    self._req_queue.get_nowait()
+                    self._pending_requests = max(0, self._pending_requests - 1)
+                    logging.debug("[%s] queue full, dropped oldest", self._label)
+                except queue.Empty:
+                    pass
+            try:
+                self._req_queue.put_nowait(req)
+                self._pending_requests += 1
+            except queue.Full:
+                pass
 
     def signal_stop(self) -> None:
         self._running = False
-        send_stop_sentinel(self._req_queue)
+        send_stop_sentinel(self._req_queue, self._queue_lock)
 
     def join(self, timeout: float = 10) -> None:
         if self._thread:

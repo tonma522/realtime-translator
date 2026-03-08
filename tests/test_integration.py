@@ -843,3 +843,76 @@ class TestCrossBackendControllerIntegration:
         partials = [m for m in messages if m[0] == "partial"]
         assert len(partials) >= 1
         assert "こんにちは世界" in "".join(m[2] for m in partials)
+
+
+class TestShowOriginal:
+    """show_original flag regression tests."""
+
+    def test_two_phase_translation_done_preserves_original_when_show_original_false(self):
+        """Controller-level: translation_done event contains original text regardless of show_original."""
+        phase1_response = MagicMock()
+        phase1_response.text = "Hello world"
+        client = MagicMock()
+        client.models.generate_content.return_value = phase1_response
+        client.models.generate_content_stream.return_value = iter([_FakeChunk("こんにちは世界")])
+
+        ui_queue = queue.Queue()
+        worker = ApiWorker(ui_queue, client=client, min_interval_sec=0.0)
+        worker.start()
+        try:
+            req = ApiRequest(
+                wav_bytes=b"\x00" * 100, prompt="transcribe",
+                stream_id="listen", phase=1, context="meeting",
+            )
+            worker.submit(req)
+            messages = _drain_ui_queue(ui_queue, timeout=3.0)
+        finally:
+            worker.stop()
+
+        done_msgs = [m for m in messages if m[0] == "translation_done"]
+        assert len(done_msgs) == 1
+        assert done_msgs[0][3] == "Hello world"
+        assert done_msgs[0][4] == "こんにちは世界"
+
+    def test_on_transcript_skips_insert_when_show_original_false(self):
+        """UI-level: _on_transcript should not insert text when show_original=False."""
+        from contextlib import contextmanager
+        from realtime_translator.app import TranslatorApp
+
+        app = object.__new__(TranslatorApp)
+        show_var = MagicMock()
+        show_var.get.return_value = False
+        app._show_original_var = show_var
+        result_text = MagicMock()
+        app._result_text = result_text
+        app._flush_active_partials = MagicMock()
+        app._stream_buffers = {}
+
+        TranslatorApp._on_transcript(app, "listen", "12:00:00", "Hello world")
+
+        app._flush_active_partials.assert_not_called()
+        result_text.insert.assert_not_called()
+
+    def test_on_transcript_inserts_when_show_original_true(self):
+        """UI-level: _on_transcript should insert text when show_original=True."""
+        from contextlib import contextmanager
+        from realtime_translator.app import TranslatorApp
+
+        app = object.__new__(TranslatorApp)
+        show_var = MagicMock()
+        show_var.get.return_value = True
+        app._show_original_var = show_var
+        result_text = MagicMock()
+        app._result_text = result_text
+        app._flush_active_partials = MagicMock()
+        app._stream_buffers = {}
+
+        @contextmanager
+        def fake_editable():
+            yield
+        app._editable_result = fake_editable
+
+        TranslatorApp._on_transcript(app, "listen", "12:00:00", "Hello world")
+
+        app._flush_active_partials.assert_called_once()
+        assert result_text.insert.call_count >= 2

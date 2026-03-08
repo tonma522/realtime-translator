@@ -6,8 +6,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from realtime_translator.assist import AssistWorker, MAX_HISTORY_ENTRIES, MAX_HISTORY_CHARS
+import realtime_translator.assist as assist_module
+from realtime_translator.assist import (
+    AssistWorker, AssistRequest, MAX_HISTORY_ENTRIES, MAX_HISTORY_CHARS,
+    _StopSentinel, _STOP,
+)
 from realtime_translator.history import TranslationHistory
+
+
+@pytest.fixture(autouse=True)
+def _reset_seq_counter():
+    """Reset the global _seq_counter before each test to prevent test leak."""
+    assist_module._seq_counter = 0
 
 
 class FakeMonitoredWorker:
@@ -299,3 +309,64 @@ class TestOpenAIBackend:
         while not ui_queue.empty():
             results.append(ui_queue.get_nowait())
         assert any(r[0] == "assist_result" and r[3] == "openai response" for r in results)
+
+
+class TestStopSentinel:
+    def test_sorts_after_requests(self):
+        """_STOP should sort after all AssistRequest items."""
+        pq = queue.PriorityQueue()
+        pq.put(_STOP)
+        req = AssistRequest(
+            request_id="test", request_type="reply_assist",
+            context="ctx", priority=0,
+        )
+        pq.put(req)
+        first = pq.get_nowait()
+        assert isinstance(first, AssistRequest)
+        second = pq.get_nowait()
+        assert isinstance(second, _StopSentinel)
+
+    def test_stop_sentinel_comparison_with_itself(self):
+        """Two _StopSentinel instances should be equal."""
+        s1 = _StopSentinel()
+        s2 = _StopSentinel()
+        assert not (s1 < s2)
+        assert s1 <= s2
+        assert s1 == s2
+
+
+class TestDrainUntilSentinel:
+    def test_signal_stop_drains_pending_requests_before_exit(self):
+        """Submit requests, then signal_stop() → worker exits cleanly."""
+        client = _make_mock_client("response")
+        busy = FakeMonitoredWorker(pending=1, busy=True)
+        worker, ui_queue = _make_worker(monitored=[busy], client=client)
+        worker.start()
+
+        rid1 = worker.submit("reply_assist", "ctx1")
+        rid2 = worker.submit("reply_assist", "ctx2")
+        rid3 = worker.submit("reply_assist", "ctx3")
+        time.sleep(0.2)
+
+        # Release workers and signal stop
+        busy._pending_requests = 0
+        busy._is_busy = False
+        worker.signal_stop()
+        worker.join(timeout=10)
+
+        results = []
+        while not ui_queue.empty():
+            results.append(ui_queue.get_nowait())
+        assist_results = [r for r in results if r[0] == "assist_result"]
+        assert len(assist_results) >= 1
+        assert worker._thread is None
+
+    def test_signal_stop_with_full_queue(self):
+        """signal_stop() should deliver _STOP even when queue is full."""
+        worker, ui_queue = _make_worker()
+        worker.start()
+        for i in range(20):
+            worker.submit("reply_assist", f"ctx{i}")
+        worker.signal_stop()
+        worker.join(timeout=10)
+        assert worker._thread is None

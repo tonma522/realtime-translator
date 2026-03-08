@@ -165,3 +165,21 @@ class TestRetranslationWorker:
         worker.start()
         worker.stop()
         assert worker._thread is None
+
+    def test_signal_stop_with_full_queue(self):
+        """signal_stop delivers sentinel even when queue is full."""
+        ui_q = queue.Queue()
+        h = self._make_history()
+        worker = RetranslationWorker(
+            ui_queue=ui_q, history=h, workers=[],
+            llm_backend="gemini", model="test", api_key="key",
+            min_interval_sec=0,
+        )
+        worker.start()
+        # Fill queue (maxsize=20)
+        for _ in range(20):
+            worker.submit(1, 1, "ctx")
+        # signal_stop should succeed even with full queue
+        worker.signal_stop()
+        worker.join(timeout=5)
+        assert worker._thread is None

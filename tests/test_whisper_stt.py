@@ -320,3 +320,29 @@ class TestWhisperWorkerPipeline:
 
         # Transcript should still be emitted, but no Phase 2 submission
         mock_api_listen.submit.assert_not_called()
+
+
+class TestPendingRequests:
+    def test_pending_requests_decrements_on_drop(self):
+        worker, _, _, _ = _build_worker()
+        worker._running = True
+        worker.submit(b"a", "listen")
+        worker.submit(b"b", "listen")
+        worker.submit(b"c", "listen")  # queue full (maxsize=3)
+        worker.submit(b"d", "listen")  # drops oldest
+        assert worker._pending_requests == 3  # not 4
+
+    @patch.object(ws_module, "WHISPER_AVAILABLE", True)
+    @patch.object(ws_module, "WhisperModel")
+    def test_pending_requests_reaches_zero_after_processing(self, MockModel):
+        segments = _make_segments("Hello")
+        mock_model = _make_mock_model(segments)
+        MockModel.return_value = mock_model
+        worker, _, _, _ = _build_worker()
+        worker.start()
+        time.sleep(0.3)
+        worker.submit(b"\x00", "listen")
+        time.sleep(0.5)
+        worker.stop()
+        assert worker._pending_requests == 0
+

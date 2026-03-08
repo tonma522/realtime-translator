@@ -10,6 +10,7 @@ from typing import Any
 from .constants import STREAM_LANGS
 from .history import TranslationHistory
 from .prompts import build_retranslation_prompt
+from .worker_utils import send_stop_sentinel
 
 
 @dataclass
@@ -43,6 +44,7 @@ class RetranslationWorker:
         self._min_interval_sec = min_interval_sec
         self._client_factory = client_factory
         self._req_queue: queue.Queue[RetranslationRequest | None] = queue.Queue(maxsize=20)
+        self._queue_lock = threading.Lock()
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_call_time = 0.0
@@ -70,10 +72,7 @@ class RetranslationWorker:
 
     def signal_stop(self) -> None:
         self._running = False
-        try:
-            self._req_queue.put_nowait(None)
-        except queue.Full:
-            pass
+        send_stop_sentinel(self._req_queue, self._queue_lock)
 
     def join(self, timeout: float = 10) -> None:
         if self._thread:
