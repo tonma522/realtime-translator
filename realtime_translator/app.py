@@ -12,6 +12,8 @@ from .constants import (
     OPENAI_AVAILABLE,
     WHISPER_AVAILABLE,
     SILENCE_SENTINEL,
+    SILENCE_RMS_THRESHOLD,
+    MIC_SILENCE_RMS_THRESHOLD,
     GEMINI_MODEL,
     OPENAI_CHAT_MODEL,
     OPENAI_STT_DEFAULT_MODEL,
@@ -267,6 +269,34 @@ class TranslatorApp:
         ttk.Checkbutton(stream_frame, text="原文も表示", variable=self._show_original_var).pack(
             side="left", padx=12, pady=4)
 
+        # ── 無音閾値 ──
+        threshold_frame = ttk.LabelFrame(self.root, text="無音閾値（RMS）")
+        threshold_frame.pack(fill="x", **pad)
+        ttk.Label(threshold_frame, text="PC音声:").grid(row=0, column=0, sticky="w", padx=(8, 2), pady=2)
+        self._threshold_listen_var = tk.IntVar(value=SILENCE_RMS_THRESHOLD)
+        self._threshold_listen_scale = tk.Scale(
+            threshold_frame, variable=self._threshold_listen_var,
+            from_=10, to=1000, orient="horizontal", length=200,
+        )
+        self._threshold_listen_scale.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
+        self._threshold_listen_label = ttk.Label(threshold_frame, text=str(SILENCE_RMS_THRESHOLD))
+        self._threshold_listen_label.grid(row=0, column=2, padx=(0, 8), pady=2)
+        self._threshold_listen_var.trace_add("write", lambda *_: self._threshold_listen_label.config(
+            text=str(self._threshold_listen_var.get())))
+
+        ttk.Label(threshold_frame, text="マイク:").grid(row=1, column=0, sticky="w", padx=(8, 2), pady=2)
+        self._threshold_speak_var = tk.IntVar(value=MIC_SILENCE_RMS_THRESHOLD)
+        self._threshold_speak_scale = tk.Scale(
+            threshold_frame, variable=self._threshold_speak_var,
+            from_=10, to=1000, orient="horizontal", length=200,
+        )
+        self._threshold_speak_scale.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
+        self._threshold_speak_label = ttk.Label(threshold_frame, text=str(MIC_SILENCE_RMS_THRESHOLD))
+        self._threshold_speak_label.grid(row=1, column=2, padx=(0, 8), pady=2)
+        self._threshold_speak_var.trace_add("write", lambda *_: self._threshold_speak_label.config(
+            text=str(self._threshold_speak_var.get())))
+        threshold_frame.columnconfigure(1, weight=1)
+
         # ── Whisper設定 ──
         whisper_frame = ttk.LabelFrame(self.root, text="Whisper設定（ローカルSTT）")
         whisper_frame.pack(fill="x", **pad)
@@ -432,6 +462,8 @@ class TranslatorApp:
             openai_chat_model=self._openai_chat_model_var.get(),
             openrouter_model=self._openrouter_model_var.get(),
             gemini_model=self._gemini_model_var.get(),
+            silence_threshold_listen=self._threshold_listen_var.get(),
+            silence_threshold_speak=self._threshold_speak_var.get(),
         )
         self._controller.start(config)
 
@@ -639,6 +671,8 @@ class TranslatorApp:
                 "openai_chat_model": self._openai_chat_model_var.get(),
                 "openai_stt_model": self._openai_stt_model_var.get(),
                 "openrouter_model": self._openrouter_model_var.get(),
+                "silence_threshold_listen": self._threshold_listen_var.get(),
+                "silence_threshold_speak": self._threshold_speak_var.get(),
             }
             save_config(config)
             self._status_var.set("状態: 設定を保存しました")
@@ -676,6 +710,8 @@ class TranslatorApp:
         self._openai_chat_model_var.set(config.get("openai_chat_model", OPENAI_CHAT_MODEL))
         self._openai_stt_model_var.set(config.get("openai_stt_model", OPENAI_STT_DEFAULT_MODEL))
         self._openrouter_model_var.set(config.get("openrouter_model", OPENROUTER_DEFAULT_MODEL))
+        self._threshold_listen_var.set(config.get("silence_threshold_listen", SILENCE_RMS_THRESHOLD))
+        self._threshold_speak_var.set(config.get("silence_threshold_speak", MIC_SILENCE_RMS_THRESHOLD))
 
     # ─────────────────────────── 終了処理 ───────────────────────────
 

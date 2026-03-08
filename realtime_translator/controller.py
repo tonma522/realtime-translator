@@ -63,6 +63,8 @@ class StartConfig:
     openai_chat_model: str = OPENAI_CHAT_MODEL
     openrouter_model: str = OPENROUTER_DEFAULT_MODEL
     gemini_model: str = GEMINI_MODEL
+    silence_threshold_listen: int = SILENCE_RMS_THRESHOLD
+    silence_threshold_speak: int = MIC_SILENCE_RMS_THRESHOLD
 
 
 def _default_client_factory(api_key: str) -> Any:
@@ -289,7 +291,7 @@ class TranslatorController:
                     return lambda wav: self.on_audio_chunk(wav, sid)
                 cb = make_cb(stream_id)
 
-            threshold = MIC_SILENCE_RMS_THRESHOLD if stream_id == "speak" else SILENCE_RMS_THRESHOLD
+            threshold = config.silence_threshold_speak if stream_id == "speak" else config.silence_threshold_listen
             ptt_ev = self._ptt_event if (stream_id == "speak" and config.ptt_enabled) else None
 
             def make_error_cb(sid: str):
