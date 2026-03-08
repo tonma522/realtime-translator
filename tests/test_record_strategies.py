@@ -234,3 +234,22 @@ class TestVADStrategy:
             s.process_frame(_make_silent_pcm())
         assert s._silent_count == 0
         assert len(s._speech_frames) == 0
+
+    def test_silence_trigger_uses_vad_silence_seconds(self):
+        """VAD_SILENCE_SECONDS (0.5s) に基づいて silence_trigger が計算される"""
+        from realtime_translator.constants import VAD_SILENCE_SECONDS
+        s, _ = self._make_strategy()
+        expected = max(1, int(SAMPLE_RATE * VAD_SILENCE_SECONDS / AUDIO_CHUNK_SIZE))
+        assert s._silence_trigger == expected
+
+    def test_max_chunks_floor_4_seconds(self):
+        """chunk_seconds=1 でも最低4秒分の蓄積が保証される"""
+        s, _ = self._make_strategy(chunk_seconds=1)
+        min_4sec = int(SAMPLE_RATE * 4 / AUDIO_CHUNK_SIZE)
+        assert s._max_speech_chunks >= min_4sec
+
+    def test_max_chunks_large_interval_uses_double(self):
+        """chunk_seconds=5 では従来通り chunk_seconds*2 = 10秒分"""
+        s, _ = self._make_strategy(chunk_seconds=5)
+        expected = int(SAMPLE_RATE * 5 * 2 / AUDIO_CHUNK_SIZE)
+        assert s._max_speech_chunks == expected

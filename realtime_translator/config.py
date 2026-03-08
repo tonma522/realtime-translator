@@ -16,7 +16,7 @@ _PROVIDER_KEYRING: dict[str, tuple[str, str]] = {
     "openrouter": ("realtime-translator-openrouter", "api-key"),
 }
 
-_VALID_INTERVALS = (3, 5, 8)
+_VALID_INTERVALS = (1, 2, 3, 5, 8)
 _DEFAULT_INTERVAL = 5
 
 try:
@@ -90,6 +90,15 @@ def _sanitize_interval(value) -> int:
     return v if v in _VALID_INTERVALS else _DEFAULT_INTERVAL
 
 
+def _sanitize_api_interval(value) -> float:
+    """api_interval 値を検証し、不正なら 0.0（自動）を返す"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if v >= 0.0 else 0.0
+
+
 def _restrict_file_permissions(path) -> None:
     """ファイルのアクセス権限を所有者のみに制限する（ベストエフォート）"""
     try:
@@ -115,6 +124,8 @@ def save_config(data: dict) -> None:
 
     if "interval" in data:
         data["interval"] = _sanitize_interval(data["interval"])
+    if "api_interval" in data:
+        data["api_interval"] = _sanitize_api_interval(data["api_interval"])
 
     # Extract all API keys and save to keyring
     for field, provider in _API_KEY_FIELDS.items():
@@ -149,6 +160,7 @@ def load_config() -> dict:
 
     if "interval" in config:
         config["interval"] = _sanitize_interval(config["interval"])
+    config["api_interval"] = _sanitize_api_interval(config.get("api_interval", 0.0))
 
     # Migrate old JSON api_key to keyring
     json_key = config.pop("api_key", "")

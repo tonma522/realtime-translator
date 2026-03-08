@@ -353,7 +353,8 @@ class TestWhisper:
             return w
         ctrl, _ = _make_controller(api_worker_factory=track_worker)
         ctrl.start(_make_config(request_whisper=True, stt_backend="whisper"))
-        assert all(w._min_interval == 1.0 for w in workers)
+        # Gemini LLM default: 4.0s (backend-specific, no longer hardcoded 1.0)
+        assert all(w._min_interval == 4.0 for w in workers)
 
     @patch("realtime_translator.controller.WHISPER_AVAILABLE", True)
     def test_whisper_disables_two_phase(self):
@@ -492,7 +493,7 @@ class TestMultiBackendRouting:
         assert len(stt_workers) == 1
         assert stt_workers[0].started
 
-    def test_openai_stt_interval_reduced(self):
+    def test_openai_stt_interval_uses_backend_default(self):
         workers = []
         def track_worker(*args, **kwargs):
             w = FakeWorker(*args, **kwargs)
@@ -501,7 +502,8 @@ class TestMultiBackendRouting:
             return w
         ctrl, _ = _make_controller(api_worker_factory=track_worker)
         ctrl.start(_make_config(stt_backend="openai", openai_api_key="sk-test"))
-        assert all(w._min_interval == 1.0 for w in workers)
+        # Gemini LLM default: 4.0s (backend-specific interval)
+        assert all(w._min_interval == 4.0 for w in workers)
 
     def test_gemini_model_passed_to_api_worker(self):
         workers = []
@@ -692,3 +694,67 @@ class TestAssistIntegration:
         ctrl, _ = _make_controller()
         assert ctrl.request_reply_assist() == ""
         assert ctrl.request_minutes() == ""
+
+
+# ─────────────────────── API interval resolution ───────────────────────
+
+class TestResolveApiInterval:
+    def test_gemini_default(self):
+        assert TranslatorController._resolve_api_interval("gemini") == 4.0
+
+    def test_openai_default(self):
+        assert TranslatorController._resolve_api_interval("openai") == 0.5
+
+    def test_openrouter_default(self):
+        assert TranslatorController._resolve_api_interval("openrouter") == 0.5
+
+    def test_unknown_fallback(self):
+        assert TranslatorController._resolve_api_interval("unknown") == 4.0
+
+    def test_custom_overrides(self):
+        assert TranslatorController._resolve_api_interval("gemini", custom=1.0) == 1.0
+
+    def test_custom_zero(self):
+        assert TranslatorController._resolve_api_interval("gemini", custom=0.0) == 0.0
+
+    def test_custom_none_uses_default(self):
+        assert TranslatorController._resolve_api_interval("gemini", custom=None) == 4.0
+
+    def test_custom_negative_clamped(self):
+        assert TranslatorController._resolve_api_interval("gemini", custom=-1.0) == 0.0
+
+    def test_openai_llm_interval_with_stt(self):
+        """OpenAI STT + Gemini LLM should use Gemini interval for LLM workers"""
+        workers = []
+        def track_worker(*args, **kwargs):
+            w = FakeWorker(*args, **kwargs)
+            w._min_interval = kwargs.get("min_interval_sec")
+            workers.append(w)
+            return w
+        ctrl, _ = _make_controller(api_worker_factory=track_worker)
+        ctrl.start(_make_config(stt_backend="openai", openai_api_key="sk-test"))
+        assert all(w._min_interval == 4.0 for w in workers)
+
+    def test_custom_api_interval_passed_to_workers(self):
+        """custom_api_interval in StartConfig overrides backend default"""
+        workers = []
+        def track_worker(*args, **kwargs):
+            w = FakeWorker(*args, **kwargs)
+            w._min_interval = kwargs.get("min_interval_sec")
+            workers.append(w)
+            return w
+        ctrl, _ = _make_controller(api_worker_factory=track_worker)
+        ctrl.start(_make_config(custom_api_interval=1.5))
+        assert all(w._min_interval == 1.5 for w in workers)
+
+    def test_openai_llm_backend_uses_openai_interval(self):
+        """OpenAI LLM backend should get 0.5s interval"""
+        llm_workers = []
+        def track_llm(*args, **kwargs):
+            w = FakeWorker(*args, **kwargs)
+            w._min_interval = kwargs.get("min_interval_sec")
+            llm_workers.append(w)
+            return w
+        ctrl, _ = _make_controller(openai_llm_worker_factory=track_llm)
+        ctrl.start(_make_config(llm_backend="openai", openai_api_key="sk-test"))
+        assert all(w._min_interval == 0.5 for w in llm_workers)

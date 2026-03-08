@@ -7,7 +7,8 @@ import pytest
 from realtime_translator import config as config_module
 from realtime_translator.config import (
     save_config, load_config, save_api_key, load_api_key,
-    _sanitize_interval, _VALID_INTERVALS, _DEFAULT_INTERVAL,
+    _sanitize_interval, _sanitize_api_interval,
+    _VALID_INTERVALS, _DEFAULT_INTERVAL,
 )
 
 
@@ -38,16 +39,18 @@ class TestSaveLoadConfig:
 
     def test_missing_file_returns_empty_or_keyring_only(self, tmp_config):
         result = load_config()
-        _api_key_fields = {"api_key", "openai_api_key", "openrouter_api_key"}
-        non_key_fields = {k: v for k, v in result.items() if k not in _api_key_fields}
-        assert non_key_fields == {}
+        _auto_fields = {"api_key", "openai_api_key", "openrouter_api_key", "api_interval"}
+        non_auto_fields = {k: v for k, v in result.items() if k not in _auto_fields}
+        assert non_auto_fields == {}
+        assert result["api_interval"] == 0.0
 
     def test_corrupt_json_returns_empty_or_keyring_only(self, tmp_config):
         tmp_config.write_text("{broken json", encoding="utf-8")
         result = load_config()
-        _api_key_fields = {"api_key", "openai_api_key", "openrouter_api_key"}
-        non_key_fields = {k: v for k, v in result.items() if k not in _api_key_fields}
-        assert non_key_fields == {}
+        _auto_fields = {"api_key", "openai_api_key", "openrouter_api_key", "api_interval"}
+        non_auto_fields = {k: v for k, v in result.items() if k not in _auto_fields}
+        assert non_auto_fields == {}
+        assert result["api_interval"] == 0.0
 
 
 class TestApiKeyStorage:
@@ -82,8 +85,9 @@ class TestApiKeyStorage:
 
 class TestSanitizeInterval:
     @pytest.mark.parametrize("value,expected", [
-        (3, 3), (5, 5), (8, 8),
+        (1, 1), (2, 2), (3, 3), (5, 5), (8, 8),
         (0, _DEFAULT_INTERVAL),
+        (4, _DEFAULT_INTERVAL),
         (10, _DEFAULT_INTERVAL),
         (-1, _DEFAULT_INTERVAL),
         ("5", 5),
@@ -229,3 +233,57 @@ class TestKeyringMigration:
 
         mock_save.assert_not_called()
         assert result["api_key"] == "json-only"
+
+
+class TestApiIntervalIsolation:
+    """api_interval が interval から完全に独立して動作することを検証"""
+
+    def test_roundtrip_both_keys(self, tmp_config):
+        save_config({"interval": 5, "api_interval": 1.5})
+        loaded = load_config()
+        assert loaded["interval"] == 5
+        assert loaded["api_interval"] == 1.5
+
+    def test_string_to_float_conversion(self, tmp_config):
+        tmp_config.write_text(json.dumps({"interval": 3, "api_interval": "1.5"}), encoding="utf-8")
+        loaded = load_config()
+        assert loaded["api_interval"] == 1.5
+
+    def test_negative_falls_back_to_zero(self, tmp_config):
+        tmp_config.write_text(json.dumps({"interval": 5, "api_interval": -1}), encoding="utf-8")
+        loaded = load_config()
+        assert loaded["api_interval"] == 0.0
+
+    def test_invalid_string_falls_back_to_zero(self, tmp_config):
+        tmp_config.write_text(json.dumps({"interval": 5, "api_interval": "bad"}), encoding="utf-8")
+        loaded = load_config()
+        assert loaded["api_interval"] == 0.0
+
+    def test_missing_api_interval_defaults_to_zero(self, tmp_config):
+        tmp_config.write_text(json.dumps({"interval": 8}), encoding="utf-8")
+        loaded = load_config()
+        assert loaded["api_interval"] == 0.0
+
+    def test_interval_constraint_preserved(self, tmp_config):
+        save_config({"interval": 5, "api_interval": 1.5})
+        loaded = load_config()
+        assert loaded["interval"] in _VALID_INTERVALS
+
+    def test_no_cross_contamination(self, tmp_config):
+        """api_interval does not affect interval and vice versa"""
+        save_config({"interval": 3, "api_interval": 2.5})
+        loaded = load_config()
+        assert loaded["interval"] == 3
+        assert loaded["api_interval"] == 2.5
+        # Changing one should not affect the other
+        save_config({"interval": 8, "api_interval": 0.0})
+        loaded = load_config()
+        assert loaded["interval"] == 8
+        assert loaded["api_interval"] == 0.0
+
+    @pytest.mark.parametrize("value,expected", [
+        (0.0, 0.0), (1.5, 1.5), (5.0, 5.0),
+        (-1.0, 0.0), ("2.0", 2.0), ("bad", 0.0), (None, 0.0),
+    ])
+    def test_sanitize_api_interval(self, value, expected):
+        assert _sanitize_api_interval(value) == expected

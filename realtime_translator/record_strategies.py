@@ -114,9 +114,11 @@ class VADStrategy:
         self._silence_threshold = silence_threshold
         self._speech_frames: list[bytes] = []
         self._silent_count = 0
-        self._silence_trigger = max(1, int(sample_rate * 0.8 / AUDIO_CHUNK_SIZE))
-        self._max_speech_chunks = int(
-            sample_rate * chunk_seconds * 2 / AUDIO_CHUNK_SIZE
+        from .constants import VAD_SILENCE_SECONDS
+        self._silence_trigger = max(1, int(sample_rate * VAD_SILENCE_SECONDS / AUDIO_CHUNK_SIZE))
+        self._max_speech_chunks = max(
+            int(sample_rate * chunk_seconds * 2 / AUDIO_CHUNK_SIZE),
+            int(sample_rate * 4 / AUDIO_CHUNK_SIZE),  # 最低4秒分を保証
         )
 
     def process_frame(self, data: bytes) -> bytes | None:

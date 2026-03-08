@@ -42,7 +42,14 @@ CONFIG_PATH = Path.home() / ".realtime_translator_config.json"
 LOG_PATH = Path.home() / ".realtime_translator.log"
 GEMINI_MODEL = "gemini-2.5-flash"
 MIN_API_INTERVAL_SEC = 4.0   # Free tier 15RPM
+MIN_API_INTERVAL_BY_BACKEND: dict[str, float] = {
+    "gemini": 4.0,      # Free tier 15RPM
+    "openai": 0.5,      # Rate limit generous
+    "openrouter": 0.5,  # Rate limit generous
+    "whisper": 0.0,     # Local, no rate limit
+}
 API_QUEUE_MAXSIZE = 3
+VAD_SILENCE_SECONDS = 0.5
 AUDIO_CHUNK_SIZE = 1024
 SILENCE_RMS_THRESHOLD = 200      # ループバック向け
 MIC_SILENCE_RMS_THRESHOLD = 150  # マイク誤検知防止

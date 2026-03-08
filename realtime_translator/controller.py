@@ -26,6 +26,7 @@ from .constants import (
     OPENROUTER_BASE_URL,
     OPENROUTER_DEFAULT_MODEL,
     MIN_API_INTERVAL_SEC,
+    MIN_API_INTERVAL_BY_BACKEND,
     MIC_SILENCE_RMS_THRESHOLD,
     SILENCE_RMS_THRESHOLD,
 )
@@ -67,6 +68,7 @@ class StartConfig:
     gemini_model: str = GEMINI_MODEL
     silence_threshold_listen: int = SILENCE_RMS_THRESHOLD
     silence_threshold_speak: int = MIC_SILENCE_RMS_THRESHOLD
+    custom_api_interval: float | None = None  # None = バックエンド自動判定
 
 
 def _default_client_factory(api_key: str) -> Any:
@@ -219,15 +221,22 @@ class TranslatorController:
 
         self._running = True
 
+    @staticmethod
+    def _resolve_api_interval(backend: str, custom: float | None = None) -> float:
+        """LLM ワーカーの min_interval_sec をバックエンド別に解決する"""
+        if custom is not None:
+            return max(0.0, custom)
+        return MIN_API_INTERVAL_BY_BACKEND.get(backend, MIN_API_INTERVAL_SEC)
+
     def _start_workers(self, config: StartConfig, llm_backend: str,
                        stt_backend: str, use_whisper: bool,
                        use_openai_stt: bool, use_vad: bool) -> None:
         """ワーカー・キャプチャを生成・起動する（失敗時は呼び出し元がrollback）"""
         self._history.clear()
+        interval = self._resolve_api_interval(llm_backend, config.custom_api_interval)
         # ── Create LLM workers based on backend ──
         if llm_backend == "gemini":
             client = self._client_factory(config.api_key)
-            interval = 1.0 if (use_whisper or use_openai_stt) else MIN_API_INTERVAL_SEC
             self._api_worker_listen = self._api_worker_factory(
                 self._ui_queue, client, min_interval_sec=interval,
                 label="ApiWorker-listen", model=config.gemini_model,
@@ -238,7 +247,6 @@ class TranslatorController:
             )
         elif llm_backend == "openai":
             openai_client = self._openai_client_factory(config.openai_api_key)
-            interval = 1.0 if (use_whisper or use_openai_stt) else MIN_API_INTERVAL_SEC
             self._api_worker_listen = self._openai_llm_worker_factory(
                 self._ui_queue, client=openai_client, min_interval_sec=interval,
                 label="OpenAiLlm-listen", model=config.openai_chat_model,
@@ -251,7 +259,6 @@ class TranslatorController:
             or_client = self._openai_client_factory(
                 config.openrouter_api_key, base_url=OPENROUTER_BASE_URL,
             )
-            interval = 1.0 if (use_whisper or use_openai_stt) else MIN_API_INTERVAL_SEC
             self._api_worker_listen = self._openai_llm_worker_factory(
                 self._ui_queue, client=or_client, min_interval_sec=interval,
                 label="OpenRouter-listen", model=config.openrouter_model,
