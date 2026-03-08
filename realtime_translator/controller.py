@@ -3,7 +3,7 @@ import logging
 import queue
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .audio import AudioCapture
@@ -164,6 +164,19 @@ class TranslatorController:
         self._llm_backend = llm_backend
         self._ptt_event.clear()
 
+        try:
+            self._start_workers(config, llm_backend, stt_backend,
+                                use_whisper, use_openai_stt, use_vad)
+        except Exception:
+            self._rollback_started_workers()
+            raise
+
+        self._running = True
+
+    def _start_workers(self, config: StartConfig, llm_backend: str,
+                       stt_backend: str, use_whisper: bool,
+                       use_openai_stt: bool, use_vad: bool) -> None:
+        """ワーカー・キャプチャを生成・起動する（失敗時は呼び出し元がrollback）"""
         # ── Create LLM workers based on backend ──
         if llm_backend == "gemini":
             client = self._client_factory(config.api_key)
@@ -268,7 +281,40 @@ class TranslatorController:
             cap.start()
             setattr(self, f"_capture_{stream_id}", cap)
 
-        self._running = True
+    def _rollback_started_workers(self) -> None:
+        """起動途中で例外が発生した場合、既に起動済みのワーカーを停止する"""
+        for attr in ("_capture_listen", "_capture_speak"):
+            cap = getattr(self, attr, None)
+            if cap:
+                try:
+                    cap.signal_stop()
+                    cap.join(timeout=3)
+                except Exception:
+                    logging.exception("rollback: %s の停止に失敗", attr)
+            setattr(self, attr, None)
+
+        if self._openai_stt_worker:
+            try:
+                self._openai_stt_worker.stop()
+            except Exception:
+                logging.exception("rollback: OpenAiSttWorker の停止に失敗")
+            self._openai_stt_worker = None
+
+        if self._whisper_worker:
+            try:
+                self._whisper_worker.stop()
+            except Exception:
+                logging.exception("rollback: WhisperWorker の停止に失敗")
+            self._whisper_worker = None
+
+        for attr in ("_api_worker_listen", "_api_worker_speak"):
+            w = getattr(self, attr, None)
+            if w:
+                try:
+                    w.stop()
+                except Exception:
+                    logging.exception("rollback: %s の停止に失敗", attr)
+            setattr(self, attr, None)
 
     def _validate_config(self, config: StartConfig) -> None:
         """バリデーション: 起動前のチェック"""

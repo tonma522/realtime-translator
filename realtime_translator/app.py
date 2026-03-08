@@ -27,6 +27,18 @@ from .config import save_config, load_config
 
 
 class TranslatorApp:
+    _STT_LABEL_TO_ID = {
+        "Gemini (内蔵)": "gemini",
+        "OpenAI Whisper": "openai",
+        "ローカルWhisper": "whisper",
+        "OpenRouter": "openrouter",
+    }
+    _LLM_LABEL_TO_ID = {
+        "Gemini": "gemini", "OpenAI": "openai", "OpenRouter": "openrouter",
+    }
+    _STT_ID_TO_LABEL = {v: k for k, v in _STT_LABEL_TO_ID.items()}
+    _LLM_ID_TO_LABEL = {v: k for k, v in _LLM_LABEL_TO_ID.items()}
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("双方向リアルタイム音声翻訳")
@@ -386,15 +398,8 @@ class TranslatorApp:
         whisper_lang = self._whisper_lang_var.get()
 
         # Map UI labels to backend identifiers
-        stt_map = {
-            "Gemini (内蔵)": "gemini",
-            "OpenAI Whisper": "openai",
-            "ローカルWhisper": "whisper",
-            "OpenRouter": "openrouter",
-        }
-        llm_map = {"Gemini": "gemini", "OpenAI": "openai", "OpenRouter": "openrouter"}
-        stt_backend = stt_map.get(self._stt_backend_var.get(), "gemini")
-        llm_backend = llm_map.get(self._llm_backend_var.get(), "gemini")
+        stt_backend = self._STT_LABEL_TO_ID.get(self._stt_backend_var.get(), "gemini")
+        llm_backend = self._LLM_LABEL_TO_ID.get(self._llm_backend_var.get(), "gemini")
 
         # request_whisper for backward compat with whisper STT backend
         request_whisper = stt_backend == "whisper"
@@ -582,8 +587,8 @@ class TranslatorApp:
                 "whisper_enabled": self._whisper_var.get(),
                 "whisper_model": self._whisper_model_var.get(),
                 "whisper_lang": self._whisper_lang_var.get(),
-                "stt_backend": self._stt_backend_var.get(),
-                "llm_backend": self._llm_backend_var.get(),
+                "stt_backend": self._STT_LABEL_TO_ID.get(self._stt_backend_var.get(), "gemini"),
+                "llm_backend": self._LLM_LABEL_TO_ID.get(self._llm_backend_var.get(), "gemini"),
                 "gemini_model": self._gemini_model_var.get(),
                 "openai_chat_model": self._openai_chat_model_var.get(),
                 "openai_stt_model": self._openai_stt_model_var.get(),
@@ -616,8 +621,10 @@ class TranslatorApp:
         self._whisper_var.set(config.get("whisper_enabled", False))
         self._whisper_model_var.set(config.get("whisper_model", "small"))
         self._whisper_lang_var.set(config.get("whisper_lang", "auto"))
-        self._stt_backend_var.set(config.get("stt_backend", "Gemini (内蔵)"))
-        self._llm_backend_var.set(config.get("llm_backend", "Gemini"))
+        stt_id = config.get("stt_backend", "gemini")
+        self._stt_backend_var.set(self._STT_ID_TO_LABEL.get(stt_id, stt_id))
+        llm_id = config.get("llm_backend", "gemini")
+        self._llm_backend_var.set(self._LLM_ID_TO_LABEL.get(llm_id, llm_id))
         self._gemini_model_var.set(config.get("gemini_model", GEMINI_MODEL))
         self._openai_chat_model_var.set(config.get("openai_chat_model", OPENAI_CHAT_MODEL))
         self._openai_stt_model_var.set(config.get("openai_stt_model", OPENAI_STT_DEFAULT_MODEL))
