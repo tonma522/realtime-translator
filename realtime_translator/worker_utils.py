@@ -22,19 +22,9 @@ def enqueue_dropping_oldest(q: queue.Queue, item, label: str = "") -> None:
         pass
 
 
-def stop_worker_thread(
-    q: queue.Queue,
-    thread, # threading.Thread | None
-    timeout: float = 10,
-) -> None:
-    """Send a ``None`` sentinel into *q* and join *thread*.
-
-    Returns the thread reference (always ``None`` after join).
-    """
+def send_stop_sentinel(q: queue.Queue) -> None:
+    """Put a ``None`` sentinel into *q*, silently dropping if full."""
     try:
         q.put_nowait(None)
     except queue.Full:
         pass
-    if thread:
-        thread.join(timeout=timeout)
-    return None

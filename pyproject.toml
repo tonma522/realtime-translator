@@ -3,5 +3,8 @@ name = "realtime-translator"
 version = "1.0.0"
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

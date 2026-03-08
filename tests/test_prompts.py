@@ -1,4 +1,5 @@
 """プロンプト生成のテスト"""
+from realtime_translator.constants import SILENCE_SENTINEL
 from realtime_translator.prompts import (
     build_prompt,
     build_stt_prompt,
@@ -20,7 +21,16 @@ class TestBuildPrompt:
 
     def test_silence_instruction(self):
         result = build_prompt("listen", "")
-        assert "(無音)" in result
+        assert SILENCE_SENTINEL in result
+
+    def test_empty_context(self):
+        result = build_prompt("listen", "")
+        assert "コンテキスト" in result
+
+    def test_output_format_specified(self):
+        result = build_prompt("listen", "ctx")
+        assert "原文:" in result
+        assert "訳文:" in result
 
 
 class TestBuildSttPrompt:
@@ -32,6 +42,10 @@ class TestBuildSttPrompt:
     def test_speak_transcribes_japanese(self):
         result = build_stt_prompt("speak")
         assert "日本語" in result
+
+    def test_silence_sentinel_included(self):
+        result = build_stt_prompt("listen")
+        assert SILENCE_SENTINEL in result
 
 
 class TestBuildTranslationPrompt:
@@ -45,3 +59,11 @@ class TestBuildTranslationPrompt:
         result = build_translation_prompt("speak", "会議", "こんにちは")
         assert "英語" in result
         assert "こんにちは" in result
+
+    def test_transcript_embedded_in_prompt(self):
+        result = build_translation_prompt("listen", "", "test transcript")
+        assert "test transcript" in result
+
+    def test_output_format_specified(self):
+        result = build_translation_prompt("listen", "", "text")
+        assert "訳文:" in result

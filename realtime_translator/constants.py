@@ -54,6 +54,10 @@ OPENAI_CHAT_MODEL = "gpt-4o"
 OPENROUTER_DEFAULT_MODEL = "google/gemini-2.0-flash-001"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+# OpenAI STT
+OPENAI_STT_MODELS = ("whisper-1",)
+OPENAI_STT_DEFAULT_MODEL = "whisper-1"
+
 STREAM_LANGS: dict[str, tuple[str, str]] = {
     "listen": ("英語", "日本語"),
     "speak":  ("日本語", "英語"),

@@ -330,6 +330,145 @@ class TestPhaseChaining:
         assert client.models.generate_content_stream.call_count == 1
 
 
+class TestStrategyControllerIntegration:
+    """Strategy + Controller 統合テスト"""
+
+    def test_continuous_strategy_triggers_callback(self):
+        """ContinuousStrategy → callback → controller.on_audio_chunk → worker.submit"""
+        import math
+        import struct
+        from unittest.mock import patch as _patch
+        from realtime_translator.record_strategies import ContinuousStrategy
+        from realtime_translator.controller import TranslatorController, StartConfig
+        from realtime_translator.constants import AUDIO_CHUNK_SIZE
+
+        # Loud PCM frame
+        n = AUDIO_CHUNK_SIZE
+        samples = [int(10000 * math.sin(2 * math.pi * 440 * i / 16000)) for i in range(n)]
+        loud_frame = struct.pack(f"<{n}h", *samples)
+
+        ui_queue = queue.Queue()
+        submitted = []
+
+        class FakeWorker:
+            def __init__(self, *a, **kw): self._label = kw.get("label", "")
+            def start(self): pass
+            def signal_stop(self): pass
+            def join(self, timeout=10): pass
+            def submit(self, req): submitted.append(req)
+            @property
+            def is_running(self): return True
+
+        class FakeCapture:
+            def __init__(self, *a, **kw):
+                self.cb = a[2]  # callback is 3rd positional arg
+            def start(self): pass
+            def signal_stop(self): pass
+            def join(self, timeout=3): pass
+
+        with _patch("realtime_translator.controller.GENAI_AVAILABLE", True):
+            ctrl = TranslatorController(
+                ui_queue,
+                capture_factory=FakeCapture,
+                api_worker_factory=FakeWorker,
+                client_factory=lambda k: None,
+            )
+            config = StartConfig(
+                api_key="AI" + "x" * 37, context="test", chunk_seconds=5,
+                enable_listen=True, enable_speak=False,
+                loopback_device_index=0, mic_device_index=None,
+                ptt_enabled=False, use_vad=False,
+                request_whisper=False, request_two_phase=False,
+            )
+            ctrl.start(config)
+
+        # Simulate strategy producing WAV via callback
+        strategy = ContinuousStrategy(
+            frames_needed=AUDIO_CHUNK_SIZE, channels=1,
+            sample_rate=16000, silence_threshold=200,
+        )
+        wav = strategy.process_frame(loud_frame)
+        assert wav is not None
+
+        # Feed WAV through controller callback (same path as real capture)
+        ctrl._capture_listen.cb(wav)
+        assert len(submitted) == 1
+        assert submitted[0].stream_id == "listen"
+        assert submitted[0].phase == 0
+        ctrl.stop()
+
+    def test_ptt_strategy_end_to_end(self):
+        """PTTStrategy press→release → controller receives chunk"""
+        import math
+        import struct
+        import threading as _threading
+        from unittest.mock import patch as _patch
+        from realtime_translator.record_strategies import PTTStrategy
+        from realtime_translator.controller import TranslatorController, StartConfig
+        from realtime_translator.constants import AUDIO_CHUNK_SIZE
+
+        n = AUDIO_CHUNK_SIZE
+        samples = [int(10000 * math.sin(2 * math.pi * 440 * i / 16000)) for i in range(n)]
+        loud_frame = struct.pack(f"<{n}h", *samples)
+
+        ui_queue = queue.Queue()
+        submitted = []
+
+        class FakeWorker:
+            def __init__(self, *a, **kw): self._label = kw.get("label", "")
+            def start(self): pass
+            def signal_stop(self): pass
+            def join(self, timeout=10): pass
+            def submit(self, req): submitted.append(req)
+            @property
+            def is_running(self): return True
+
+        class FakeCapture:
+            def __init__(self, *a, **kw):
+                self.cb = a[2]
+                self.ptt_event = kw.get("ptt_event")
+            def start(self): pass
+            def signal_stop(self): pass
+            def join(self, timeout=3): pass
+
+        with _patch("realtime_translator.controller.GENAI_AVAILABLE", True):
+            ctrl = TranslatorController(
+                ui_queue,
+                capture_factory=FakeCapture,
+                api_worker_factory=FakeWorker,
+                client_factory=lambda k: None,
+            )
+            config = StartConfig(
+                api_key="AI" + "x" * 37, context="test", chunk_seconds=5,
+                enable_listen=False, enable_speak=True,
+                loopback_device_index=None, mic_device_index=1,
+                ptt_enabled=True, use_vad=False,
+                request_whisper=False, request_two_phase=False,
+            )
+            ctrl.start(config)
+
+        ptt_ev = ctrl._capture_speak.ptt_event
+        assert ptt_ev is not None
+
+        strategy = PTTStrategy(ptt_ev, 1, 16000, 200)
+
+        # PTT press
+        ctrl.ptt_press()
+        assert ptt_ev.is_set()
+        assert strategy.process_frame(loud_frame) is None  # accumulating
+
+        # PTT release
+        ctrl.ptt_release()
+        wav = strategy.process_frame(loud_frame)
+        assert wav is not None
+
+        # Feed through callback
+        ctrl._capture_speak.cb(wav)
+        assert len(submitted) == 1
+        assert submitted[0].stream_id == "speak"
+        ctrl.stop()
+
+
 class TestWorkerLifecycle:
     """ワーカーのライフサイクルテスト"""
 
@@ -350,3 +489,342 @@ class TestWorkerLifecycle:
         ui_queue = queue.Queue()
         worker = ApiWorker(ui_queue, min_interval_sec=0.0)
         assert worker.is_running is False
+
+
+# ─────────────────────── Cross-backend integration tests ───────────────────────
+
+def _make_openai_streaming_chunk(content):
+    """OpenAI形式のストリーミングチャンクを生成"""
+    chunk = MagicMock()
+    delta = MagicMock()
+    delta.content = content
+    choice = MagicMock()
+    choice.delta = delta
+    chunk.choices = [choice]
+    return chunk
+
+
+def _make_openai_client(chunks_list):
+    """OpenAI Chat Completions モッククライアント"""
+    client = MagicMock()
+    client.chat.completions.create.return_value = iter(chunks_list)
+    return client
+
+
+class TestOpenAiLlmIntegration:
+    """OpenAiLlmWorker の統合テスト（ストリーミングパイプライン）"""
+
+    def test_openai_llm_streaming_pipeline(self):
+        """OpenAiLlmWorker: submit → streaming → partial_start/partial/partial_end"""
+        from realtime_translator.openai_llm import OpenAiLlmWorker
+
+        chunks = [_make_openai_streaming_chunk("こんにちは"), _make_openai_streaming_chunk("世界")]
+        client = _make_openai_client(chunks)
+
+        ui_queue = queue.Queue()
+        worker = OpenAiLlmWorker(ui_queue, client=client, min_interval_sec=0.0)
+        worker.start()
+        try:
+            req = ApiRequest(
+                wav_bytes=None, prompt="translate: Hello world",
+                stream_id="listen", phase=2, transcript="Hello world",
+            )
+            worker.submit(req)
+            messages = _drain_ui_queue(ui_queue)
+        finally:
+            worker.stop()
+
+        types = [m[0] for m in messages]
+        assert "partial_start" in types
+        assert "partial_end" in types
+        partials = [m[2] for m in messages if m[0] == "partial"]
+        assert "".join(partials) == "こんにちは世界"
+
+    def test_openai_llm_phase1_triggers_phase2(self):
+        """OpenAiLlmWorker: Phase1 STT → transcript + Phase2 自動投入"""
+        from realtime_translator.openai_llm import OpenAiLlmWorker
+
+        call_count = 0
+        def streaming_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return iter([_make_openai_streaming_chunk("Hello world")])
+            else:
+                return iter([_make_openai_streaming_chunk("こんにちは世界")])
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = streaming_side_effect
+
+        ui_queue = queue.Queue()
+        worker = OpenAiLlmWorker(
+            ui_queue, client=client, min_interval_sec=0.0,
+            model="gpt-4o-audio-preview",
+        )
+        worker.start()
+        try:
+            req = ApiRequest(
+                wav_bytes=b"\x00" * 100, prompt="transcribe",
+                stream_id="listen", phase=1, context="meeting",
+            )
+            worker.submit(req)
+            messages = _drain_ui_queue(ui_queue, timeout=3.0)
+        finally:
+            worker.stop()
+
+        transcripts = [m for m in messages if m[0] == "transcript"]
+        assert len(transcripts) == 1
+        assert transcripts[0][3] == "Hello world"
+
+        partials = [m for m in messages if m[0] == "partial"]
+        assert len(partials) >= 1
+
+        assert client.chat.completions.create.call_count == 2
+
+
+class TestOpenAiSttIntegration:
+    """OpenAiSttWorker → LLMワーカー パイプライン統合テスト"""
+
+    def test_stt_to_llm_pipeline(self):
+        """OpenAiSttWorker → transcript → Phase2 submit to LLMワーカー"""
+        from realtime_translator.openai_stt import OpenAiSttWorker
+
+        # Mock STT client
+        stt_client = MagicMock()
+        stt_response = MagicMock()
+        stt_response.text = "Hello world"
+        stt_client.audio.transcriptions.create.return_value = stt_response
+
+        # Mock LLM worker (receives phase=2)
+        submitted = []
+
+        class FakeLlmWorker:
+            @property
+            def is_running(self):
+                return True
+            def submit(self, req):
+                submitted.append(req)
+
+        ui_queue = queue.Queue()
+        stt_worker = OpenAiSttWorker(
+            api_worker_listen=FakeLlmWorker(),
+            api_worker_speak=FakeLlmWorker(),
+            ui_queue=ui_queue,
+            client=stt_client,
+            context="test meeting",
+        )
+        stt_worker.start()
+        try:
+            stt_worker.submit(b"\x00" * 100, "listen")
+            time.sleep(0.5)
+        finally:
+            stt_worker.stop()
+
+        # transcript がUIキューに入っている
+        messages = []
+        while not ui_queue.empty():
+            messages.append(ui_queue.get_nowait())
+        transcripts = [m for m in messages if m[0] == "transcript"]
+        assert len(transcripts) == 1
+        assert transcripts[0][3] == "Hello world"
+
+        # Phase2リクエストがLLMワーカーに投入された
+        assert len(submitted) == 1
+        assert submitted[0].phase == 2
+        assert submitted[0].stream_id == "listen"
+        assert submitted[0].transcript == "Hello world"
+
+    def test_stt_error_propagation(self):
+        """OpenAiSttWorker: API例外 → error メッセージがUIキューに入る"""
+        from realtime_translator.openai_stt import OpenAiSttWorker
+
+        stt_client = MagicMock()
+        stt_client.audio.transcriptions.create.side_effect = RuntimeError("transcription failed")
+
+        class FakeLlmWorker:
+            @property
+            def is_running(self):
+                return True
+            def submit(self, req):
+                pass
+
+        ui_queue = queue.Queue()
+        stt_worker = OpenAiSttWorker(
+            api_worker_listen=FakeLlmWorker(),
+            api_worker_speak=FakeLlmWorker(),
+            ui_queue=ui_queue,
+            client=stt_client,
+            context="test",
+        )
+        stt_worker.start()
+        try:
+            stt_worker.submit(b"\x00" * 100, "listen")
+            time.sleep(0.5)
+        finally:
+            stt_worker.stop()
+
+        messages = []
+        while not ui_queue.empty():
+            messages.append(ui_queue.get_nowait())
+        errors = [m for m in messages if m[0] == "error"]
+        assert len(errors) == 1
+        assert errors[0][1] == "listen"
+
+
+class TestGeminiModelSelection:
+    """Geminiモデル選択の統合テスト"""
+
+    def test_custom_model_used_in_api_call(self):
+        """ApiWorker にカスタムモデルを渡すと generate_content_stream に反映される"""
+        chunks = [_FakeChunk("translated")]
+        client = _make_mock_client(chunks)
+
+        ui_queue = queue.Queue()
+        worker = ApiWorker(ui_queue, client=client, min_interval_sec=0.0, model="gemini-2.0-flash")
+        worker.start()
+        try:
+            req = ApiRequest(wav_bytes=None, prompt="translate", stream_id="listen", phase=2)
+            worker.submit(req)
+            _drain_ui_queue(ui_queue)
+        finally:
+            worker.stop()
+
+        call_kwargs = client.models.generate_content_stream.call_args
+        assert call_kwargs.kwargs.get("model") == "gemini-2.0-flash"
+
+    def test_25_model_gets_thinking_config(self):
+        """2.5系モデルは ThinkingConfig が適用される"""
+        from realtime_translator.api import _generate_config_for_model, _THINKING_CONFIG
+        config = _generate_config_for_model("gemini-2.5-flash")
+        if _THINKING_CONFIG is not None:
+            assert config is _THINKING_CONFIG
+        # 2.5でないモデルはNone
+        assert _generate_config_for_model("gemini-2.0-flash") is None
+
+    def test_non_25_model_no_thinking_config(self):
+        """2.5以外のモデルは ThinkingConfig なし"""
+        chunks = [_FakeChunk("result")]
+        client = _make_mock_client(chunks)
+
+        ui_queue = queue.Queue()
+        worker = ApiWorker(ui_queue, client=client, min_interval_sec=0.0, model="gemini-2.0-flash")
+        worker.start()
+        try:
+            req = ApiRequest(wav_bytes=None, prompt="translate", stream_id="speak", phase=2)
+            worker.submit(req)
+            _drain_ui_queue(ui_queue)
+        finally:
+            worker.stop()
+
+        call_kwargs = client.models.generate_content_stream.call_args
+        assert call_kwargs.kwargs.get("config") is None
+
+
+class TestCrossBackendControllerIntegration:
+    """Controller経由のクロスバックエンド統合テスト"""
+
+    def test_openai_llm_backend_full_pipeline(self):
+        """Controller(llm_backend=openai) → OpenAiLlmWorker経由でUIキューに到達"""
+        from unittest.mock import patch as _patch
+        from realtime_translator.controller import TranslatorController, StartConfig
+        from realtime_translator.openai_llm import OpenAiLlmWorker
+
+        chunks = [_make_openai_streaming_chunk("翻訳結果")]
+        openai_client = _make_openai_client(chunks)
+
+        ui_queue = queue.Queue()
+
+        class FakeCapture:
+            def __init__(self, *a, **kw):
+                self.cb = a[2]
+            def start(self): pass
+            def signal_stop(self): pass
+            def join(self, timeout=3): pass
+
+        with _patch("realtime_translator.controller.GENAI_AVAILABLE", True), \
+             _patch("realtime_translator.controller.OPENAI_AVAILABLE", True):
+            ctrl = TranslatorController(
+                ui_queue,
+                capture_factory=FakeCapture,
+                openai_client_factory=lambda key, base_url=None: openai_client,
+            )
+            config = StartConfig(
+                api_key="AI" + "x" * 37, context="test", chunk_seconds=5,
+                enable_listen=True, enable_speak=False,
+                loopback_device_index=0, mic_device_index=None,
+                ptt_enabled=False, use_vad=False,
+                request_whisper=False, request_two_phase=False,
+                llm_backend="openai", openai_api_key="sk-test",
+                # audio-capable model needed for phase=0 with wav_bytes
+                openai_chat_model="gpt-4o-audio-preview",
+            )
+            ctrl.start(config)
+
+        # Simulate audio chunk via callback
+        ctrl._capture_listen.cb(b"\x00" * 100)  # triggers on_audio_chunk → submit
+        messages = _drain_ui_queue(ui_queue, timeout=3.0)
+        ctrl.stop()
+
+        # OpenAI LLMワーカーがストリーミング結果を返している
+        types = [m[0] for m in messages]
+        assert "partial_start" in types
+        assert "partial_end" in types
+        partials = [m[2] for m in messages if m[0] == "partial"]
+        assert "翻訳結果" in "".join(partials)
+
+    def test_openai_stt_plus_gemini_llm_pipeline(self):
+        """Controller(stt=openai, llm=gemini) → OpenAiStt → transcript → ApiWorker"""
+        from unittest.mock import patch as _patch
+        from realtime_translator.controller import TranslatorController, StartConfig
+
+        # Mock OpenAI STT client
+        stt_client = MagicMock()
+        stt_response = MagicMock()
+        stt_response.text = "Hello world"
+        stt_client.audio.transcriptions.create.return_value = stt_response
+
+        # Mock Gemini LLM client
+        gemini_client = _make_mock_client([_FakeChunk("こんにちは世界")])
+
+        ui_queue = queue.Queue()
+
+        class FakeCapture:
+            def __init__(self, *a, **kw):
+                self.cb = a[2]
+            def start(self): pass
+            def signal_stop(self): pass
+            def join(self, timeout=3): pass
+
+        with _patch("realtime_translator.controller.GENAI_AVAILABLE", True), \
+             _patch("realtime_translator.controller.OPENAI_AVAILABLE", True):
+            ctrl = TranslatorController(
+                ui_queue,
+                capture_factory=FakeCapture,
+                client_factory=lambda key: gemini_client,
+                openai_client_factory=lambda key, base_url=None: stt_client,
+            )
+            config = StartConfig(
+                api_key="AI" + "x" * 37, context="test", chunk_seconds=5,
+                enable_listen=True, enable_speak=False,
+                loopback_device_index=0, mic_device_index=None,
+                ptt_enabled=False, use_vad=False,
+                request_whisper=False, request_two_phase=False,
+                stt_backend="openai", llm_backend="gemini",
+                openai_api_key="sk-test",
+            )
+            ctrl.start(config)
+
+        # Simulate audio chunk → OpenAI STT → transcript
+        ctrl._capture_listen.cb(b"\x00" * 100)
+        messages = _drain_ui_queue(ui_queue, timeout=4.0)
+        ctrl.stop()
+
+        # STTの文字起こし結果がUIキューに入る
+        transcripts = [m for m in messages if m[0] == "transcript"]
+        assert len(transcripts) == 1
+        assert transcripts[0][3] == "Hello world"
+
+        # Gemini LLMの翻訳結果もUIキューに入る
+        partials = [m for m in messages if m[0] == "partial"]
+        assert len(partials) >= 1
+        assert "こんにちは世界" in "".join(m[2] for m in partials)

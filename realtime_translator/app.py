@@ -1,9 +1,7 @@
 """tkinter UI"""
 import logging
 import queue
-import threading
 import tkinter as tk
-from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -11,22 +9,20 @@ from tkinter import ttk, scrolledtext, filedialog
 
 from .constants import (
     PYAUDIO_AVAILABLE,
-    GENAI_AVAILABLE,
+    OPENAI_AVAILABLE,
     WHISPER_AVAILABLE,
     SILENCE_SENTINEL,
+    GEMINI_MODEL,
+    OPENAI_CHAT_MODEL,
+    OPENAI_STT_DEFAULT_MODEL,
+    OPENROUTER_DEFAULT_MODEL,
+    OPENAI_STT_MODELS,
     pyaudio,
-    genai,
-    MIN_API_INTERVAL_SEC,
-    MIC_SILENCE_RMS_THRESHOLD,
-    SILENCE_RMS_THRESHOLD,
     _PTT_BINDINGS,
     _STREAM_META,
 )
 from .devices import enum_devices
-from .audio import AudioCapture
-from .api import ApiWorker, ApiRequest
-from .whisper_stt import WhisperWorker
-from .prompts import build_prompt, build_stt_prompt
+from .controller import TranslatorController, StartConfig
 from .config import save_config, load_config
 
 
@@ -37,18 +33,16 @@ class TranslatorApp:
         self.root.resizable(True, True)
 
         self._ui_queue: queue.Queue = queue.Queue()
-        self._api_worker_listen: ApiWorker | None = None
-        self._api_worker_speak: ApiWorker | None = None
-        self._whisper_worker: WhisperWorker | None = None
-        self._capture_listen: AudioCapture | None = None
-        self._capture_speak: AudioCapture | None = None
+        self._controller = TranslatorController(
+            self._ui_queue,
+            on_error=lambda msg: self._append_error(msg),
+            on_status=lambda msg: self._status_var.set(f"状態: {msg}") if hasattr(self, "_status_var") else None,
+        )
         self._stream_buffers: dict[str, dict] = {}
         self._loopback_devices: list[dict] = []
         self._mic_devices: list[dict] = []
         self._saved_loopback_name: str = ""
         self._saved_mic_name: str = ""
-        self._running = False
-        self._ptt_event = threading.Event()
         self._pa = None
 
         try:
@@ -82,14 +76,130 @@ class TranslatorApp:
     def _build_ui(self) -> None:
         pad = {"padx": 8, "pady": 4}
 
+        # ── バックエンド設定 ──
+        backend_frame = ttk.LabelFrame(self.root, text="バックエンド設定")
+        backend_frame.pack(fill="x", **pad)
+
+        ttk.Label(backend_frame, text="STTバックエンド:").grid(row=0, column=0, sticky="w", **pad)
+        self._stt_backend_var = tk.StringVar(value="Gemini (内蔵)")
+        self._stt_backend_combo = ttk.Combobox(
+            backend_frame, textvariable=self._stt_backend_var, state="readonly", width=20,
+            values=["Gemini (内蔵)", "OpenAI Whisper", "ローカルWhisper", "OpenRouter"],
+        )
+        self._stt_backend_combo.grid(row=0, column=1, sticky="w", **pad)
+
+        ttk.Label(backend_frame, text="LLMバックエンド:").grid(row=0, column=2, sticky="w", **pad)
+        self._llm_backend_var = tk.StringVar(value="Gemini")
+        self._llm_backend_combo = ttk.Combobox(
+            backend_frame, textvariable=self._llm_backend_var, state="readonly", width=15,
+            values=["Gemini", "OpenAI", "OpenRouter"],
+        )
+        self._llm_backend_combo.grid(row=0, column=3, sticky="w", **pad)
+        backend_frame.columnconfigure(1, weight=1)
+
         # ── API設定 ──
         api_frame = ttk.LabelFrame(self.root, text="API設定")
         api_frame.pack(fill="x", **pad)
-        ttk.Label(api_frame, text="Gemini APIキー:").grid(row=0, column=0, sticky="w", **pad)
+
+        # Gemini key row
+        self._gemini_key_label = ttk.Label(api_frame, text="Gemini APIキー:")
+        self._gemini_key_label.grid(row=0, column=0, sticky="w", **pad)
         self._api_key_var = tk.StringVar()
         self._api_entry = ttk.Entry(api_frame, textvariable=self._api_key_var, show="*", width=45)
         self._api_entry.grid(row=0, column=1, sticky="ew", **pad)
+
+        # Gemini model
+        self._gemini_model_label = ttk.Label(api_frame, text="モデル:")
+        self._gemini_model_label.grid(row=0, column=2, sticky="w", **pad)
+        self._gemini_model_var = tk.StringVar(value=GEMINI_MODEL)
+        self._gemini_model_combo = ttk.Combobox(
+            api_frame, textvariable=self._gemini_model_var, width=22,
+            values=["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"],
+        )
+        self._gemini_model_combo.grid(row=0, column=3, sticky="w", **pad)
+
+        # OpenAI key row
+        self._openai_key_label = ttk.Label(api_frame, text="OpenAI APIキー:")
+        self._openai_key_label.grid(row=1, column=0, sticky="w", **pad)
+        self._openai_api_key_var = tk.StringVar()
+        self._openai_api_entry = ttk.Entry(api_frame, textvariable=self._openai_api_key_var, show="*", width=45)
+        self._openai_api_entry.grid(row=1, column=1, sticky="ew", **pad)
+
+        # OpenAI model
+        self._openai_model_label = ttk.Label(api_frame, text="モデル:")
+        self._openai_model_label.grid(row=1, column=2, sticky="w", **pad)
+        self._openai_chat_model_var = tk.StringVar(value=OPENAI_CHAT_MODEL)
+        self._openai_model_combo = ttk.Combobox(
+            api_frame, textvariable=self._openai_chat_model_var, width=22,
+            values=["gpt-4o", "gpt-4o-mini", "gpt-4o-audio-preview"],
+        )
+        self._openai_model_combo.grid(row=1, column=3, sticky="w", **pad)
+
+        # OpenRouter key row
+        self._openrouter_key_label = ttk.Label(api_frame, text="OpenRouter APIキー:")
+        self._openrouter_key_label.grid(row=2, column=0, sticky="w", **pad)
+        self._openrouter_api_key_var = tk.StringVar()
+        self._openrouter_api_entry = ttk.Entry(api_frame, textvariable=self._openrouter_api_key_var, show="*", width=45)
+        self._openrouter_api_entry.grid(row=2, column=1, sticky="ew", **pad)
+
+        # OpenRouter model
+        self._openrouter_model_label = ttk.Label(api_frame, text="モデル:")
+        self._openrouter_model_label.grid(row=2, column=2, sticky="w", **pad)
+        self._openrouter_model_var = tk.StringVar(value=OPENROUTER_DEFAULT_MODEL)
+        self._openrouter_model_combo = ttk.Combobox(
+            api_frame, textvariable=self._openrouter_model_var, width=22,
+            values=["google/gemini-2.0-flash-001", "google/gemini-2.5-flash", "anthropic/claude-3.5-sonnet"],
+        )
+        self._openrouter_model_combo.grid(row=2, column=3, sticky="w", **pad)
+
+        # OpenAI STT model
+        self._openai_stt_model_label = ttk.Label(api_frame, text="STTモデル:")
+        self._openai_stt_model_label.grid(row=3, column=0, sticky="w", **pad)
+        self._openai_stt_model_var = tk.StringVar(value=OPENAI_STT_DEFAULT_MODEL)
+        self._openai_stt_model_combo = ttk.Combobox(
+            api_frame, textvariable=self._openai_stt_model_var, state="readonly", width=20,
+            values=list(OPENAI_STT_MODELS),
+        )
+        self._openai_stt_model_combo.grid(row=3, column=1, sticky="w", **pad)
+
         api_frame.columnconfigure(1, weight=1)
+
+        # Dynamic visibility
+        self._api_frame = api_frame
+        self._backend_widgets = {
+            "gemini": [self._gemini_key_label, self._api_entry, self._gemini_model_label, self._gemini_model_combo],
+            "openai": [self._openai_key_label, self._openai_api_entry, self._openai_model_label, self._openai_model_combo],
+            "openrouter": [self._openrouter_key_label, self._openrouter_api_entry, self._openrouter_model_label, self._openrouter_model_combo],
+            "openai_stt": [self._openai_stt_model_label, self._openai_stt_model_combo],
+        }
+
+        def _update_backend_visibility(*_):
+            stt = self._stt_backend_var.get()
+            llm = self._llm_backend_var.get()
+            needs_gemini = llm == "Gemini" or stt == "Gemini (内蔵)"
+            needs_openai = llm == "OpenAI" or stt == "OpenAI Whisper"
+            needs_openrouter = llm == "OpenRouter" or stt == "OpenRouter"
+            needs_openai_stt = stt in ("OpenAI Whisper", "OpenRouter")
+
+            for w in self._backend_widgets["gemini"]:
+                w.grid() if needs_gemini else w.grid_remove()
+            for w in self._backend_widgets["openai"]:
+                w.grid() if needs_openai else w.grid_remove()
+            for w in self._backend_widgets["openrouter"]:
+                w.grid() if needs_openrouter else w.grid_remove()
+            for w in self._backend_widgets["openai_stt"]:
+                w.grid() if needs_openai_stt else w.grid_remove()
+
+            # Update whisper/two-phase visibility
+            is_external_stt = stt in ("OpenAI Whisper", "OpenRouter")
+            if hasattr(self, "_two_phase_var"):
+                if is_external_stt:
+                    self._two_phase_var.set(False)
+
+        self._stt_backend_var.trace_add("write", _update_backend_visibility)
+        self._llm_backend_var.trace_add("write", _update_backend_visibility)
+        # Initialize visibility
+        _update_backend_visibility()
 
         # ── デバイス設定 ──
         dev_frame = ttk.LabelFrame(self.root, text="デバイス設定")
@@ -254,7 +364,7 @@ class TranslatorApp:
     # ─────────────────────────── 翻訳制御 ───────────────────────────
 
     def _toggle(self) -> None:
-        if self._running:
+        if self._controller.is_running:
             self._stop()
         else:
             self._start()
@@ -262,105 +372,65 @@ class TranslatorApp:
     def _start(self) -> None:
         try:
             self._start_inner()
+        except ValueError as e:
+            self._append_error(str(e))
         except Exception as e:
             logging.exception("_start() で予期しないエラー")
             self._append_error(f"起動エラー: {e}")
 
     def _start_inner(self) -> None:
-        if not GENAI_AVAILABLE:
-            self._append_error("google-genai が未インストールです。")
-            return
-        api_key = self._api_key_var.get().strip()
-        if not api_key:
-            self._append_error("Gemini APIキーを入力してください。")
-            return
-
-        # Lightweight API key format validation (M12)
-        if len(api_key) != 39 or not api_key.startswith("AI"):
-            logging.warning(
-                "APIキーの形式が通常と異なります (長さ=%d, 先頭='%s')。"
-                "Gemini APIキーは通常 'AI' で始まる39文字です。",
-                len(api_key), api_key[:2],
-            )
-
         enable_listen = self._enable_listen_var.get()
         enable_speak = self._enable_speak_var.get()
-        if not enable_listen and not enable_speak:
-            self._append_error("「聴く」か「話す」を少なくとも1つ有効にしてください。")
-            return
-
         loopback_idx = self._get_device_index(self._loopback_combo, self._loopback_devices) if enable_listen else None
-        if enable_listen and loopback_idx is None:
-            self._append_error("有効なループバックデバイスを選択してください。")
-            return
         mic_idx = self._get_device_index(self._mic_combo, self._mic_devices) if enable_speak else None
-        if enable_speak and mic_idx is None:
-            self._append_error("有効なマイクデバイスを選択してください。")
-            return
+        whisper_lang = self._whisper_lang_var.get()
 
-        client = genai.Client(api_key=api_key)
-        context = self._context_text.get("1.0", "end").strip()
-        chunk_sec = self._interval_var.get()
-        ptt_enabled = self._ptt_var.get()
-        use_vad = self._vad_var.get() and not ptt_enabled
-        use_whisper = self._whisper_var.get() and WHISPER_AVAILABLE
-        use_two_phase = self._two_phase_var.get() and not use_whisper
-        self._ptt_event.clear()
+        # Map UI labels to backend identifiers
+        stt_map = {
+            "Gemini (内蔵)": "gemini",
+            "OpenAI Whisper": "openai",
+            "ローカルWhisper": "whisper",
+            "OpenRouter": "openrouter",
+        }
+        llm_map = {"Gemini": "gemini", "OpenAI": "openai", "OpenRouter": "openrouter"}
+        stt_backend = stt_map.get(self._stt_backend_var.get(), "gemini")
+        llm_backend = llm_map.get(self._llm_backend_var.get(), "gemini")
 
-        # Whisper 使用時は翻訳専用ワーカー (高速レート)
-        interval = 1.0 if use_whisper else MIN_API_INTERVAL_SEC
+        # request_whisper for backward compat with whisper STT backend
+        request_whisper = stt_backend == "whisper"
 
-        self._api_worker_listen = ApiWorker(self._ui_queue, client, min_interval_sec=interval, label="ApiWorker-listen")
-        self._api_worker_speak  = ApiWorker(self._ui_queue, client, min_interval_sec=interval, label="ApiWorker-speak")
-        self._api_worker_listen.start()
-        self._api_worker_speak.start()
+        config = StartConfig(
+            api_key=self._api_key_var.get().strip(),
+            context=self._context_text.get("1.0", "end").strip(),
+            chunk_seconds=self._interval_var.get(),
+            enable_listen=enable_listen,
+            enable_speak=enable_speak,
+            loopback_device_index=loopback_idx,
+            mic_device_index=mic_idx,
+            ptt_enabled=self._ptt_var.get(),
+            use_vad=self._vad_var.get(),
+            request_whisper=request_whisper,
+            request_two_phase=self._two_phase_var.get(),
+            whisper_model=self._whisper_model_var.get(),
+            whisper_language=None if whisper_lang == "auto" else whisper_lang,
+            stt_backend=stt_backend,
+            llm_backend=llm_backend,
+            openai_api_key=self._openai_api_key_var.get().strip(),
+            openrouter_api_key=self._openrouter_api_key_var.get().strip(),
+            openai_stt_model=self._openai_stt_model_var.get(),
+            openai_chat_model=self._openai_chat_model_var.get(),
+            openrouter_model=self._openrouter_model_var.get(),
+            gemini_model=self._gemini_model_var.get(),
+        )
+        self._controller.start(config)
 
-        if use_whisper:
-            lang = None if self._whisper_lang_var.get() == "auto" else self._whisper_lang_var.get()
-            self._whisper_worker = WhisperWorker(
-                api_worker_listen=self._api_worker_listen,
-                api_worker_speak=self._api_worker_speak,
-                ui_queue=self._ui_queue,
-                model_size=self._whisper_model_var.get(),
-                language=lang,
-                context=context,
-            )
-            self._whisper_worker.start()
-
-        for stream_id, idx in [("listen", loopback_idx), ("speak", mic_idx)]:
-            if idx is None:
-                continue
-
-            if use_whisper:
-                def make_whisper_cb(sid: str) -> Callable[[bytes], None]:
-                    return lambda wav: self._whisper_worker.submit(wav, sid)
-                cb = make_whisper_cb(stream_id)
-            else:
-                def make_cb(sid: str, ctx: str) -> Callable[[bytes], None]:
-                    return lambda wav: self._on_audio_chunk(wav, sid, ctx, use_two_phase)
-                cb = make_cb(stream_id, context)
-
-            threshold = MIC_SILENCE_RMS_THRESHOLD if stream_id == "speak" else SILENCE_RMS_THRESHOLD
-            ptt_ev = self._ptt_event if (stream_id == "speak" and ptt_enabled) else None
-
-            def make_error_cb(sid: str):
-                def _err_cb(msg: str):
-                    self._ui_queue.put(("error", sid, msg))
-                return _err_cb
-
-            cap = AudioCapture(idx, chunk_sec, cb, stream_id,
-                               ptt_event=ptt_ev, use_vad=use_vad, silence_threshold=threshold,
-                               error_callback=make_error_cb(stream_id))
-            cap.start()
-            setattr(self, f"_capture_{stream_id}", cap)
-
-        self._running = True
+        # UI updates after successful start
         self._start_btn.config(text="■ 翻訳停止")
         streams = [s for s, en in [("聴く", enable_listen), ("話す", enable_speak)] if en]
-        mode = "Whisper" if use_whisper else ("2フェーズ" if use_two_phase else "通常")
+        mode = "Whisper" if self._controller.use_whisper else ("2フェーズ" if self._controller.use_two_phase else "通常")
         self._status_var.set(f"状態: 翻訳中... ({'+'.join(streams)}, {mode})")
 
-        if enable_speak and ptt_enabled:
+        if enable_speak and config.ptt_enabled:
             self._ptt_btn.config(state="normal")
             def _maybe_ptt_press(e):
                 if isinstance(e.widget, (tk.Entry, tk.Text, ttk.Entry)):
@@ -375,84 +445,28 @@ class TranslatorApp:
                 self.root.bind(event, handler)
 
     def _stop(self) -> None:
-        self._ptt_event.clear()
         for event in _PTT_BINDINGS:
             self.root.unbind(event)
         self._ptt_btn.config(state="disabled", text="🎙 録音 (押して話す)", bg="#FF8C00")
 
-        # Phase 1: Signal ALL workers to stop (so they begin shutting down in parallel)
-        captures = []
-        for attr in ("_capture_listen", "_capture_speak"):
-            cap = getattr(self, attr)
-            if cap:
-                cap._running = False
-                captures.append(cap)
-            setattr(self, attr, None)
-
-        whisper = self._whisper_worker
-        if whisper:
-            whisper._running = False
-            whisper._req_queue.put(None)  # sentinel
-            self._whisper_worker = None
-
-        api_workers = []
-        for w in (self._api_worker_listen, self._api_worker_speak):
-            if w:
-                w._running = False
-                w._req_queue.put(None)  # sentinel
-                api_workers.append(w)
-        self._api_worker_listen = None
-        self._api_worker_speak = None
-
-        # Phase 2: Join all threads (they are already stopping in parallel)
-        for cap in captures:
-            if cap._thread:
-                cap._thread.join(timeout=3)
-                cap._thread = None
-        if whisper and whisper._thread:
-            whisper._thread.join(timeout=10)
-        for w in api_workers:
-            if w._thread:
-                w._thread.join(timeout=10)
-        for _ in range(1000):
-            try:
-                self._ui_queue.get_nowait()
-            except queue.Empty:
-                break
+        self._controller.stop()
         self._stream_buffers.clear()
-        self._running = False
+
         self._start_btn.config(text="▶ 翻訳開始")
         self._status_var.set("状態: 停止中")
 
-    def _on_audio_chunk(self, wav_bytes: bytes, stream_id: str, context: str, two_phase: bool) -> None:
-        worker = self._api_worker_listen if stream_id == "listen" else self._api_worker_speak
-        if worker is None:
-            return
-        if two_phase:
-            worker.submit(ApiRequest(
-                wav_bytes=wav_bytes,
-                prompt=build_stt_prompt(stream_id),
-                stream_id=stream_id, phase=1, context=context,
-            ))
-        else:
-            worker.submit(ApiRequest(
-                wav_bytes=wav_bytes,
-                prompt=build_prompt(stream_id, context),
-                stream_id=stream_id, phase=0,
-            ))
-
     def _ptt_press(self) -> None:
-        if self._running and self._capture_speak:
-            self._ptt_event.set()
+        if self._controller.can_ptt:
+            self._controller.ptt_press()
             self._ptt_btn.config(text="🔴 録音中...", bg="#CC0000")
             self._status_var.set("状態: 🎙 録音中 (Space/ボタンを離すと送信)")
 
     def _ptt_release(self) -> None:
-        self._ptt_event.clear()
+        self._controller.ptt_release()
         if self._ptt_btn["state"] != "disabled":
             self._ptt_btn.config(text="🎙 録音 (押して話す)", bg="#FF8C00")
-            streams = [s for s, cap in [("聴く", self._capture_listen), ("話す", self._capture_speak)] if cap]
-            self._status_var.set(f"状態: 翻訳中... ({'+'.join(streams)})")
+            if self._controller.is_running:
+                self._status_var.set("状態: 翻訳中...")
 
     # ─────────────────────────── キューポーリング・UI更新 ───────────────────────────
 
@@ -554,6 +568,8 @@ class TranslatorApp:
         try:
             config = {
                 "api_key": self._api_key_var.get(),
+                "openai_api_key": self._openai_api_key_var.get(),
+                "openrouter_api_key": self._openrouter_api_key_var.get(),
                 "context": self._context_text.get("1.0", "end").strip(),
                 "interval": self._interval_var.get(),
                 "loopback_device_name": self._loopback_var.get(),
@@ -566,6 +582,12 @@ class TranslatorApp:
                 "whisper_enabled": self._whisper_var.get(),
                 "whisper_model": self._whisper_model_var.get(),
                 "whisper_lang": self._whisper_lang_var.get(),
+                "stt_backend": self._stt_backend_var.get(),
+                "llm_backend": self._llm_backend_var.get(),
+                "gemini_model": self._gemini_model_var.get(),
+                "openai_chat_model": self._openai_chat_model_var.get(),
+                "openai_stt_model": self._openai_stt_model_var.get(),
+                "openrouter_model": self._openrouter_model_var.get(),
             }
             save_config(config)
             self._status_var.set("状態: 設定を保存しました")
@@ -577,6 +599,8 @@ class TranslatorApp:
         if not config:
             return
         self._api_key_var.set(config.get("api_key", ""))
+        self._openai_api_key_var.set(config.get("openai_api_key", ""))
+        self._openrouter_api_key_var.set(config.get("openrouter_api_key", ""))
         self._interval_var.set(config.get("interval", 5))
         ctx = config.get("context", "")
         if ctx:
@@ -592,6 +616,12 @@ class TranslatorApp:
         self._whisper_var.set(config.get("whisper_enabled", False))
         self._whisper_model_var.set(config.get("whisper_model", "small"))
         self._whisper_lang_var.set(config.get("whisper_lang", "auto"))
+        self._stt_backend_var.set(config.get("stt_backend", "Gemini (内蔵)"))
+        self._llm_backend_var.set(config.get("llm_backend", "Gemini"))
+        self._gemini_model_var.set(config.get("gemini_model", GEMINI_MODEL))
+        self._openai_chat_model_var.set(config.get("openai_chat_model", OPENAI_CHAT_MODEL))
+        self._openai_stt_model_var.set(config.get("openai_stt_model", OPENAI_STT_DEFAULT_MODEL))
+        self._openrouter_model_var.set(config.get("openrouter_model", OPENROUTER_DEFAULT_MODEL))
 
     # ─────────────────────────── 終了処理 ───────────────────────────
 

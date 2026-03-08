@@ -9,6 +9,13 @@ from .constants import CONFIG_PATH
 _KEYRING_SERVICE = "realtime-translator"
 _KEYRING_USERNAME = "gemini-api-key"
 
+# Multi-provider keyring service names
+_PROVIDER_KEYRING: dict[str, tuple[str, str]] = {
+    "gemini":     ("realtime-translator-gemini",     "api-key"),
+    "openai":     ("realtime-translator-openai",     "api-key"),
+    "openrouter": ("realtime-translator-openrouter", "api-key"),
+}
+
 _VALID_INTERVALS = (3, 5, 8)
 _DEFAULT_INTERVAL = 5
 
@@ -41,26 +48,36 @@ def _keyring_usable() -> bool:
         return False
 
 
-def save_api_key(api_key: str) -> bool:
+def save_api_key(api_key: str, provider: str = "gemini") -> bool:
     """APIキーをkeyringに保存する。成功時True、失敗時False"""
     if not _keyring_usable():
         return False
+    service, username = _PROVIDER_KEYRING.get(provider, (_KEYRING_SERVICE, _KEYRING_USERNAME))
     try:
-        keyring.set_password(_KEYRING_SERVICE, _KEYRING_USERNAME, api_key)
+        keyring.set_password(service, username, api_key)
         return True
     except Exception:
-        logging.exception("keyring へのAPIキー保存に失敗")
+        logging.exception("keyring へのAPIキー保存に失敗 (provider=%s)", provider)
         return False
 
 
-def load_api_key() -> str:
+def load_api_key(provider: str = "gemini") -> str:
     """keyringからAPIキーを取得する"""
     if not _keyring_usable():
         return ""
+    service, username = _PROVIDER_KEYRING.get(provider, (_KEYRING_SERVICE, _KEYRING_USERNAME))
     try:
-        return keyring.get_password(_KEYRING_SERVICE, _KEYRING_USERNAME) or ""
+        result = keyring.get_password(service, username) or ""
+        # Auto-migrate: old single-key → new provider-specific key
+        if not result and provider == "gemini":
+            old = keyring.get_password(_KEYRING_SERVICE, _KEYRING_USERNAME) or ""
+            if old:
+                save_api_key(old, "gemini")
+                logging.info("旧keyringエントリをgeminiプロバイダーに移行しました")
+                return old
+        return result
     except Exception:
-        logging.exception("keyring からのAPIキー取得に失敗")
+        logging.exception("keyring からのAPIキー取得に失敗 (provider=%s)", provider)
         return ""
 
 
@@ -85,16 +102,28 @@ def _restrict_file_permissions(path) -> None:
         logging.warning("設定ファイルの権限設定に失敗: %s", path)
 
 
+_API_KEY_FIELDS = {
+    "api_key": "gemini",
+    "openai_api_key": "openai",
+    "openrouter_api_key": "openrouter",
+}
+
+
 def save_config(data: dict) -> None:
     """設定をJSONファイルに保存する。APIキーはkeyringに分離"""
     data = dict(data)  # 呼び出し元の辞書を変更しないようにコピー
-    api_key = data.pop("api_key", "")
+
     if "interval" in data:
         data["interval"] = _sanitize_interval(data["interval"])
-    if api_key:
-        saved_to_keyring = save_api_key(api_key)
-        if not saved_to_keyring:
-            data["api_key"] = api_key
+
+    # Extract all API keys and save to keyring
+    for field, provider in _API_KEY_FIELDS.items():
+        key = data.pop(field, "")
+        if key:
+            saved = save_api_key(key, provider)
+            if not saved:
+                data[field] = key  # fallback to JSON
+
     try:
         CONFIG_PATH.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -121,10 +150,10 @@ def load_config() -> dict:
     if "interval" in config:
         config["interval"] = _sanitize_interval(config["interval"])
 
-    # 旧JSONにapi_keyがあればkeyringに移行
+    # Migrate old JSON api_key to keyring
     json_key = config.pop("api_key", "")
     if json_key and _keyring_usable():
-        if save_api_key(json_key):
+        if save_api_key(json_key, "gemini"):
             logging.info("APIキーをkeyringに移行しました")
             try:
                 CONFIG_PATH.write_text(
@@ -133,8 +162,14 @@ def load_config() -> dict:
             except Exception:
                 logging.exception("移行後の設定保存に失敗")
 
-    # keyringからAPIキーを取得（なければJSON由来のキーをフォールバック）
-    kr_key = load_api_key()
-    config["api_key"] = kr_key or json_key
+    # Load all provider keys from keyring (with JSON fallback)
+    for field, provider in _API_KEY_FIELDS.items():
+        json_fallback = config.pop(field, "")
+        kr_key = load_api_key(provider)
+        config[field] = kr_key or json_fallback
+
+    # Backward compat: ensure api_key has gemini key or old json_key fallback
+    if not config.get("api_key") and json_key:
+        config["api_key"] = json_key
 
     return config

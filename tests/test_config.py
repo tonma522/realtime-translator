@@ -38,13 +38,15 @@ class TestSaveLoadConfig:
 
     def test_missing_file_returns_empty_or_keyring_only(self, tmp_config):
         result = load_config()
-        non_key_fields = {k: v for k, v in result.items() if k != "api_key"}
+        _api_key_fields = {"api_key", "openai_api_key", "openrouter_api_key"}
+        non_key_fields = {k: v for k, v in result.items() if k not in _api_key_fields}
         assert non_key_fields == {}
 
     def test_corrupt_json_returns_empty_or_keyring_only(self, tmp_config):
         tmp_config.write_text("{broken json", encoding="utf-8")
         result = load_config()
-        non_key_fields = {k: v for k, v in result.items() if k != "api_key"}
+        _api_key_fields = {"api_key", "openai_api_key", "openrouter_api_key"}
+        non_key_fields = {k: v for k, v in result.items() if k not in _api_key_fields}
         assert non_key_fields == {}
 
 
@@ -173,7 +175,7 @@ class TestKeyringMigration:
             result = load_config()
 
         # save_api_key が正しいキーで呼ばれた
-        mock_save.assert_called_once_with("migrate-me")
+        mock_save.assert_called_once_with("migrate-me", "gemini")
         # 返り値に正しいapi_keyが含まれる
         assert result["api_key"] == "migrate-me"
         # JSONファイルからapi_keyが削除されている
