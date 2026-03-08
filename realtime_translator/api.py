@@ -82,11 +82,22 @@ class ApiWorker:
         self._req_queue: queue.Queue[ApiRequest | None] = queue.Queue(maxsize=API_QUEUE_MAXSIZE)
         self._running = False
         self._thread: threading.Thread | None = None
-        self._last_call_time = 0.0
+        self._last_audio_call_time = 0.0
+        self._last_text_call_time = 0.0
+        self._pending_requests = 0
+        self._is_busy = False
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def pending_requests(self) -> int:
+        return self._pending_requests
+
+    @property
+    def is_busy(self) -> bool:
+        return self._is_busy
 
     def start(self) -> None:
         self._running = True
@@ -96,6 +107,7 @@ class ApiWorker:
     def submit(self, req: ApiRequest) -> None:
         if not self._running:
             return
+        self._pending_requests += 1
         enqueue_dropping_oldest(self._req_queue, req, self._label)
 
     def signal_stop(self) -> None:
@@ -119,35 +131,33 @@ class ApiWorker:
                 continue
             if req is None:
                 break
-            self._call_api(req)
+            self._is_busy = True
+            try:
+                self._call_api(req)
+            finally:
+                self._is_busy = False
+                self._pending_requests = max(0, self._pending_requests - 1)
 
     def _call_api(self, req: ApiRequest) -> None:
-        elapsed = time.monotonic() - self._last_call_time
+        # Phase-separated rate limiting: audio (phase 0,1) vs text (phase 2)
+        if req.phase == 2:
+            elapsed = time.monotonic() - self._last_text_call_time
+        else:
+            elapsed = time.monotonic() - self._last_audio_call_time
         if elapsed < self._min_interval_sec:
             time.sleep(self._min_interval_sec - elapsed)
         ts = datetime.now().strftime("%H:%M:%S")
         try:
             if req.phase == 1:
-                # Phase1: 音声→文字起こし（累積後 Phase2 へ）
+                # Phase1: 音声→文字起こし（非ストリーミング）
                 audio_part = genai_types.Part.from_bytes(data=req.wav_bytes, mime_type="audio/wav")
-                chunks = []
-                chunk_count = 0
-                for chunk in self._client.models.generate_content_stream(
+                logging.debug("[%s] phase1 non-streaming stream=%s", self._label, req.stream_id)
+                response = self._client.models.generate_content(
                     model=self._model, contents=[req.prompt, audio_part],
                     config=_generate_config_for_model(self._model),
-                ):
-                    chunk_count += 1
-                    logging.debug("[%s] phase1 chunk #%d: candidates=%s",
-                                  self._label, chunk_count, getattr(chunk, 'candidates', 'N/A'))
-                    try:
-                        t = chunk.text or ""
-                    except ValueError:
-                        logging.debug("[%s] phase1 chunk #%d: ValueError on .text", self._label, chunk_count)
-                        continue
-                    if t:
-                        chunks.append(t)
-                logging.debug("[%s] phase1 done: %d chunks, text=%r", self._label, chunk_count, "".join(chunks)[:200])
-                transcript = "".join(chunks).strip()
+                )
+                transcript = (response.text or "").strip()
+                logging.debug("[%s] phase1 done: text=%r", self._label, transcript[:200])
                 if transcript and SILENCE_SENTINEL not in transcript:
                     self._ui_queue.put(("transcript", req.stream_id, ts, transcript))
                     if self._running:
@@ -169,6 +179,7 @@ class ApiWorker:
                               f"{len(req.wav_bytes)}B" if req.wav_bytes else "None")
                 started = False
                 chunk_count = 0
+                collected: list[str] = []
                 try:
                     for chunk in self._client.models.generate_content_stream(
                         model=self._model, contents=contents,
@@ -189,6 +200,7 @@ class ApiWorker:
                         if not started:
                             self._ui_queue.put(("partial_start", req.stream_id, ts))
                             started = True
+                        collected.append(text)
                         self._ui_queue.put(("partial", req.stream_id, text))
                 except Exception as e:
                     logging.exception("[%s] streaming error", self._label)
@@ -197,7 +209,14 @@ class ApiWorker:
                     logging.debug("[%s] stream done: %d chunks, started=%s", self._label, chunk_count, started)
                     if started:
                         self._ui_queue.put(("partial_end", req.stream_id))
+                        full_text = "".join(collected).strip()
+                        if full_text and SILENCE_SENTINEL not in full_text:
+                            original = req.transcript if req.phase == 2 else ""
+                            self._ui_queue.put(("translation_done", req.stream_id, ts, original, full_text))
         except Exception as e:
             self._ui_queue.put(("error", req.stream_id, _localize_error(str(e))))
         finally:
-            self._last_call_time = time.monotonic()
+            if req.phase == 2:
+                self._last_text_call_time = time.monotonic()
+            else:
+                self._last_audio_call_time = time.monotonic()

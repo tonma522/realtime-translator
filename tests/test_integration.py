@@ -92,9 +92,9 @@ class TestEndToEnd:
         assert len(partials) == 2
         assert partials[0][2] == "Hello "
         assert partials[1][2] == "World"
-        # 最後は partial_end
-        assert messages[-1][0] == "partial_end"
-        assert messages[-1][1] == "listen"
+        # partial_end が含まれる
+        types = [m[0] for m in messages]
+        assert "partial_end" in types
 
     def test_empty_chunks_skipped(self):
         """空テキストやValueErrorチャンクはスキップされる"""
@@ -146,8 +146,9 @@ class TestEndToEnd:
         contents = call_args.kwargs.get("contents", call_args[1].get("contents"))
         assert len(contents) == 1  # テキストのみ、オーディオなし
         # ストリーミングシーケンスは正常
-        assert messages[0][0] == "partial_start"
-        assert messages[-1][0] == "partial_end"
+        types = [m[0] for m in messages]
+        assert "partial_start" in types
+        assert "partial_end" in types
 
 
 class TestErrorPropagation:
@@ -237,20 +238,14 @@ class TestPhaseChaining:
 
     def test_phase1_triggers_phase2(self):
         """Phase 1 の文字起こし結果が Phase 2 翻訳リクエストとして自動送信される"""
-        call_count = 0
-
-        def stream_side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                # Phase 1: 文字起こし結果
-                return iter([_FakeChunk("Hello world")])
-            else:
-                # Phase 2: 翻訳結果
-                return iter([_FakeChunk("こんにちは世界")])
+        # Phase 1: non-streaming
+        phase1_response = MagicMock()
+        phase1_response.text = "Hello world"
 
         client = MagicMock()
-        client.models.generate_content_stream.side_effect = stream_side_effect
+        client.models.generate_content.return_value = phase1_response
+        # Phase 2: streaming
+        client.models.generate_content_stream.return_value = iter([_FakeChunk("こんにちは世界")])
 
         ui_queue = queue.Queue()
         worker = ApiWorker(ui_queue, client=client, min_interval_sec=0.0)
@@ -280,12 +275,16 @@ class TestPhaseChaining:
         assert len(partials) == 1
         assert partials[0][2] == "こんにちは世界"
 
-        # API が2回呼ばれた（Phase1 + Phase2）
-        assert client.models.generate_content_stream.call_count == 2
+        # Phase 1 used generate_content, Phase 2 used generate_content_stream
+        assert client.models.generate_content.call_count == 1
+        assert client.models.generate_content_stream.call_count == 1
 
     def test_silence_does_not_trigger_phase2(self):
         """無音（SILENCE_SENTINEL）の場合は Phase 2 が送信されない"""
-        client = _make_mock_client([_FakeChunk(SILENCE_SENTINEL)])
+        phase1_response = MagicMock()
+        phase1_response.text = SILENCE_SENTINEL
+        client = MagicMock()
+        client.models.generate_content.return_value = phase1_response
 
         ui_queue = queue.Queue()
         worker = ApiWorker(ui_queue, client=client, min_interval_sec=0.0)
@@ -304,12 +303,17 @@ class TestPhaseChaining:
 
         # 無音 → transcript も partial も出ない
         assert len(messages) == 0
-        # API は1回だけ（Phase 1 のみ）
-        assert client.models.generate_content_stream.call_count == 1
+        # Phase 1 used generate_content
+        assert client.models.generate_content.call_count == 1
+        # Phase 2 should not have been triggered
+        assert client.models.generate_content_stream.call_count == 0
 
     def test_empty_transcript_does_not_trigger_phase2(self):
         """空の文字起こし結果では Phase 2 が送信されない"""
-        client = _make_mock_client([_FakeChunk("   ")])
+        phase1_response = MagicMock()
+        phase1_response.text = "   "
+        client = MagicMock()
+        client.models.generate_content.return_value = phase1_response
 
         ui_queue = queue.Queue()
         worker = ApiWorker(ui_queue, client=client, min_interval_sec=0.0)
@@ -327,7 +331,7 @@ class TestPhaseChaining:
             worker.stop()
 
         assert len(messages) == 0
-        assert client.models.generate_content_stream.call_count == 1
+        assert client.models.generate_content.call_count == 1
 
 
 class TestStrategyControllerIntegration:
@@ -541,20 +545,31 @@ class TestOpenAiLlmIntegration:
         assert "".join(partials) == "こんにちは世界"
 
     def test_openai_llm_phase1_triggers_phase2(self):
-        """OpenAiLlmWorker: Phase1 STT → transcript + Phase2 自動投入"""
+        """OpenAiLlmWorker: Phase1 STT (non-streaming) → transcript + Phase2 自動投入"""
         from realtime_translator.openai_llm import OpenAiLlmWorker
 
+        # Phase 1: non-streaming response
+        phase1_response = MagicMock()
+        phase1_message = MagicMock()
+        phase1_message.content = "Hello world"
+        phase1_choice = MagicMock()
+        phase1_choice.message = phase1_message
+        phase1_response.choices = [phase1_choice]
+
+        # Phase 2: streaming
+        phase2_chunks = [_make_openai_streaming_chunk("こんにちは世界")]
+
         call_count = 0
-        def streaming_side_effect(**kwargs):
+        def create_side_effect(**kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return iter([_make_openai_streaming_chunk("Hello world")])
+                return phase1_response
             else:
-                return iter([_make_openai_streaming_chunk("こんにちは世界")])
+                return iter(phase2_chunks)
 
         client = MagicMock()
-        client.chat.completions.create.side_effect = streaming_side_effect
+        client.chat.completions.create.side_effect = create_side_effect
 
         ui_queue = queue.Queue()
         worker = OpenAiLlmWorker(

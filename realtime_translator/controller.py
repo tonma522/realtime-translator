@@ -8,6 +8,8 @@ from typing import Any
 
 from .audio import AudioCapture
 from .api import ApiWorker, ApiRequest
+from .history import TranslationHistory
+from .retranslation import RetranslationWorker
 from .whisper_stt import WhisperWorker
 from .openai_llm import OpenAiLlmWorker
 from .openai_stt import OpenAiSttWorker
@@ -49,6 +51,7 @@ class StartConfig:
     use_vad: bool
     request_whisper: bool
     request_two_phase: bool
+    show_original: bool = True
     whisper_model: str = "small"
     whisper_language: str | None = None
     # Multi-backend fields (defaults = Gemini-only, backward compatible)
@@ -107,10 +110,13 @@ class TranslatorController:
         self._api_worker_speak: ApiWorker | OpenAiLlmWorker | None = None
         self._whisper_worker: WhisperWorker | None = None
         self._openai_stt_worker: OpenAiSttWorker | None = None
+        self._retrans_worker: RetranslationWorker | None = None
         self._capture_listen: AudioCapture | None = None
         self._capture_speak: AudioCapture | None = None
+        self._history = TranslationHistory()
 
         self._context = ""
+        self._show_original = True
         self._use_two_phase = False
         self._use_whisper = False
         self._stt_backend = "gemini"
@@ -136,6 +142,22 @@ class TranslatorController:
     def ptt_event(self) -> threading.Event:
         return self._ptt_event
 
+    @property
+    def history(self) -> TranslationHistory:
+        return self._history
+
+    def can_retranslate(self) -> bool:
+        """再翻訳可能か（two-phase / 外部STT モードのみ）"""
+        return self._running and (
+            self._use_two_phase or self._use_whisper or self._stt_backend in ("openai", "openrouter")
+        )
+
+    def request_retranslation(self, center_seq: int, n_surrounding: int) -> str:
+        """再翻訳をリクエスト。batch_id を返す"""
+        if not self.can_retranslate() or self._retrans_worker is None:
+            return ""
+        return self._retrans_worker.submit(center_seq, n_surrounding, self._context)
+
     def _notify_error(self, msg: str) -> None:
         if self._on_error:
             self._on_error(msg)
@@ -158,6 +180,7 @@ class TranslatorController:
         use_vad = config.use_vad and not config.ptt_enabled
 
         self._context = config.context
+        self._show_original = config.show_original
         self._use_two_phase = use_two_phase
         self._use_whisper = use_whisper
         self._stt_backend = stt_backend
@@ -177,6 +200,7 @@ class TranslatorController:
                        stt_backend: str, use_whisper: bool,
                        use_openai_stt: bool, use_vad: bool) -> None:
         """ワーカー・キャプチャを生成・起動する（失敗時は呼び出し元がrollback）"""
+        self._history.clear()
         # ── Create LLM workers based on backend ──
         if llm_backend == "gemini":
             client = self._client_factory(config.api_key)
@@ -281,40 +305,40 @@ class TranslatorController:
             cap.start()
             setattr(self, f"_capture_{stream_id}", cap)
 
+        # ── Create retranslation worker ──
+        workers_list = [w for w in (self._api_worker_listen, self._api_worker_speak) if w]
+        if llm_backend == "gemini":
+            retrans_client_factory = lambda: self._client_factory(config.api_key)
+            retrans_model = config.gemini_model
+            retrans_api_key = config.api_key
+        elif llm_backend == "openai":
+            retrans_client_factory = lambda: self._openai_client_factory(config.openai_api_key)
+            retrans_model = config.openai_chat_model
+            retrans_api_key = config.openai_api_key
+        else:  # openrouter
+            retrans_client_factory = lambda: self._openai_client_factory(
+                config.openrouter_api_key, base_url=OPENROUTER_BASE_URL)
+            retrans_model = config.openrouter_model
+            retrans_api_key = config.openrouter_api_key
+        self._retrans_worker = RetranslationWorker(
+            ui_queue=self._ui_queue,
+            history=self._history,
+            workers=workers_list,
+            llm_backend=llm_backend,
+            model=retrans_model,
+            api_key=retrans_api_key,
+            client_factory=retrans_client_factory,
+        )
+        self._retrans_worker.start()
+
     def _rollback_started_workers(self) -> None:
         """起動途中で例外が発生した場合、既に起動済みのワーカーを停止する"""
-        for attr in ("_capture_listen", "_capture_speak"):
-            cap = getattr(self, attr, None)
-            if cap:
-                try:
-                    cap.signal_stop()
-                    cap.join(timeout=3)
-                except Exception:
-                    logging.exception("rollback: %s の停止に失敗", attr)
-            setattr(self, attr, None)
-
-        if self._openai_stt_worker:
-            try:
-                self._openai_stt_worker.stop()
-            except Exception:
-                logging.exception("rollback: OpenAiSttWorker の停止に失敗")
-            self._openai_stt_worker = None
-
-        if self._whisper_worker:
-            try:
-                self._whisper_worker.stop()
-            except Exception:
-                logging.exception("rollback: WhisperWorker の停止に失敗")
-            self._whisper_worker = None
-
-        for attr in ("_api_worker_listen", "_api_worker_speak"):
-            w = getattr(self, attr, None)
-            if w:
-                try:
-                    w.stop()
-                except Exception:
-                    logging.exception("rollback: %s の停止に失敗", attr)
-            setattr(self, attr, None)
+        # stop() は _running ガードがあるので一時的に True にして再利用する
+        self._running = True
+        try:
+            self.stop()
+        except Exception:
+            logging.exception("rollback: stop() に失敗")
 
     def _validate_config(self, config: StartConfig) -> None:
         """バリデーション: 起動前のチェック"""
@@ -395,6 +419,11 @@ class TranslatorController:
             openai_stt.signal_stop()
             self._openai_stt_worker = None
 
+        retrans = self._retrans_worker
+        if retrans:
+            retrans.signal_stop()
+            self._retrans_worker = None
+
         api_workers = []
         for w in (self._api_worker_listen, self._api_worker_speak):
             if w:
@@ -410,6 +439,8 @@ class TranslatorController:
             whisper.join(timeout=10)
         if openai_stt:
             openai_stt.join(timeout=10)
+        if retrans:
+            retrans.join(timeout=5)
         for w in api_workers:
             w.join(timeout=10)
 
@@ -441,7 +472,7 @@ class TranslatorController:
         else:
             worker.submit(ApiRequest(
                 wav_bytes=wav_bytes,
-                prompt=build_prompt(stream_id, self._context),
+                prompt=build_prompt(stream_id, self._context, self._show_original),
                 stream_id=stream_id, phase=0,
             ))
 

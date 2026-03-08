@@ -43,6 +43,8 @@ class FakeWorker:
         self.joined = False
         self.submitted = []
         self._label = kwargs.get("label", "")
+        self._pending_requests = 0
+        self._is_busy = False
 
     def start(self):
         self.started = True
@@ -59,6 +61,14 @@ class FakeWorker:
     @property
     def is_running(self):
         return self.started and not self.stopped
+
+    @property
+    def pending_requests(self):
+        return self._pending_requests
+
+    @property
+    def is_busy(self):
+        return self._is_busy
 
 
 class FakeCapture:

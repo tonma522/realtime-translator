@@ -47,7 +47,7 @@ AUDIO_CHUNK_SIZE = 1024
 SILENCE_RMS_THRESHOLD = 200      # ループバック向け
 MIC_SILENCE_RMS_THRESHOLD = 150  # マイク誤検知防止
 SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM = 2 bytes per sample
-SILENCE_SENTINEL = "(無音)"
+SILENCE_SENTINEL = "<silent>"
 
 # OpenAI / OpenRouter
 OPENAI_CHAT_MODEL = "gpt-4o"
@@ -64,7 +64,7 @@ STREAM_LANGS: dict[str, tuple[str, str]] = {
 }
 
 _PTT_BINDINGS = ("<KeyPress-space>", "<KeyRelease-space>", "<FocusOut>")
-_STREAM_META: dict[str, tuple[str, str]] = {
-    "listen": ("PC音声→日本語", "stream_listen"),
-    "speak":  ("マイク→英語",   "stream_speak"),
+_STREAM_META: dict[str, tuple[str, str, str]] = {
+    "listen": ("PC音声", "stream_listen", "英語→日本語"),
+    "speak":  ("マイク", "stream_speak",  "日本語→英語"),
 }

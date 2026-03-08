@@ -4,6 +4,7 @@ from realtime_translator.prompts import (
     build_prompt,
     build_stt_prompt,
     build_translation_prompt,
+    build_retranslation_prompt,
 )
 
 
@@ -25,19 +26,34 @@ class TestBuildPrompt:
 
     def test_empty_context(self):
         result = build_prompt("listen", "")
-        assert "コンテキスト" in result
+        assert "Context" in result
 
-    def test_output_format_specified(self):
+    def test_prompt_is_english(self):
         result = build_prompt("listen", "ctx")
+        assert "You are a realtime translation assistant" in result
+        assert "translate" in result.lower()
+
+    def test_show_original_true_includes_format(self):
+        result = build_prompt("listen", "ctx", show_original=True)
         assert "原文:" in result
         assert "訳文:" in result
+
+    def test_show_original_false_translation_only(self):
+        result = build_prompt("listen", "ctx", show_original=False)
+        assert "原文:" not in result
+        assert "訳文:" not in result
+        assert "Output only the translation" in result
+
+    def test_show_original_default_is_true(self):
+        result = build_prompt("listen", "ctx")
+        assert "原文:" in result
 
 
 class TestBuildSttPrompt:
     def test_listen_transcribes_english(self):
         result = build_stt_prompt("listen")
         assert "英語" in result
-        assert "翻訳は不要" in result
+        assert "Do not translate" in result
 
     def test_speak_transcribes_japanese(self):
         result = build_stt_prompt("speak")
@@ -46,6 +62,10 @@ class TestBuildSttPrompt:
     def test_silence_sentinel_included(self):
         result = build_stt_prompt("listen")
         assert SILENCE_SENTINEL in result
+
+    def test_prompt_is_english(self):
+        result = build_stt_prompt("listen")
+        assert "Transcribe" in result
 
 
 class TestBuildTranslationPrompt:
@@ -64,6 +84,34 @@ class TestBuildTranslationPrompt:
         result = build_translation_prompt("listen", "", "test transcript")
         assert "test transcript" in result
 
-    def test_output_format_specified(self):
+    def test_output_only_translation(self):
         result = build_translation_prompt("listen", "", "text")
-        assert "訳文:" in result
+        assert "Output only the translation" in result
+
+    def test_prompt_is_english(self):
+        result = build_translation_prompt("listen", "ctx", "text")
+        assert "Translate" in result
+
+
+class TestBuildRetranslationPrompt:
+    def test_contains_context(self):
+        result = build_retranslation_prompt("listen", "会議", "history block")
+        assert "会議" in result
+
+    def test_contains_history_block(self):
+        block = ">>> [英語→日本語] Hello → こんにちは"
+        result = build_retranslation_prompt("listen", "ctx", block)
+        assert block in result
+
+    def test_contains_language_direction(self):
+        result = build_retranslation_prompt("listen", "ctx", "block")
+        assert "英語" in result
+        assert "日本語" in result
+
+    def test_output_only_translation(self):
+        result = build_retranslation_prompt("listen", "ctx", "block")
+        assert "Output only the translation" in result
+
+    def test_prompt_is_english(self):
+        result = build_retranslation_prompt("listen", "ctx", "block")
+        assert "Re-translate" in result

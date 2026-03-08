@@ -263,6 +263,9 @@ class TranslatorApp:
         self._two_phase_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(stream_frame, text="2フェーズ(STT→翻訳)", variable=self._two_phase_var).pack(
             side="left", padx=12, pady=4)
+        self._show_original_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(stream_frame, text="原文も表示", variable=self._show_original_var).pack(
+            side="left", padx=12, pady=4)
 
         # ── Whisper設定 ──
         whisper_frame = ttk.LabelFrame(self.root, text="Whisper設定（ローカルSTT）")
@@ -308,6 +311,8 @@ class TranslatorApp:
         self._start_btn.pack(side="left", padx=4)
         ttk.Button(btn_frame, text="クリア", command=self._clear_result).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="エクスポート", command=self._export_result).pack(side="left", padx=4)
+        self._retrans_btn = ttk.Button(btn_frame, text="再翻訳...", command=self._open_retranslation, state="disabled")
+        self._retrans_btn.pack(side="left", padx=4)
         self._save_btn = ttk.Button(btn_frame, text="設定保存", command=self._save_config)
         self._save_btn.pack(side="left", padx=4)
         self._ptt_frame = ttk.Frame(btn_frame)
@@ -416,6 +421,7 @@ class TranslatorApp:
             use_vad=self._vad_var.get(),
             request_whisper=request_whisper,
             request_two_phase=self._two_phase_var.get(),
+            show_original=self._show_original_var.get(),
             whisper_model=self._whisper_model_var.get(),
             whisper_language=None if whisper_lang == "auto" else whisper_lang,
             stt_backend=stt_backend,
@@ -431,6 +437,7 @@ class TranslatorApp:
 
         # UI updates after successful start
         self._start_btn.config(text="■ 翻訳停止")
+        self._retrans_btn.config(state="normal" if self._controller.can_retranslate() else "disabled")
         streams = [s for s, en in [("聴く", enable_listen), ("話す", enable_speak)] if en]
         mode = "Whisper" if self._controller.use_whisper else ("2フェーズ" if self._controller.use_two_phase else "通常")
         self._status_var.set(f"状態: 翻訳中... ({'+'.join(streams)}, {mode})")
@@ -458,6 +465,7 @@ class TranslatorApp:
         self._stream_buffers.clear()
 
         self._start_btn.config(text="▶ 翻訳開始")
+        self._retrans_btn.config(state="disabled")
         self._status_var.set("状態: 停止中")
 
     def _ptt_press(self) -> None:
@@ -485,9 +493,11 @@ class TranslatorApp:
             self._result_text.config(state="disabled")
 
     def _poll_queue(self) -> None:
+        had_items = False
         try:
             while True:
                 item = self._ui_queue.get_nowait()
+                had_items = True
                 try:
                     kind = item[0]
                     if kind == "partial_start":
@@ -505,6 +515,15 @@ class TranslatorApp:
                     elif kind == "error":
                         _, stream_id, msg = item
                         self._append_error(f"[{stream_id}] {msg}")
+                    elif kind == "translation_done":
+                        _, stream_id, ts, original, translation = item
+                        self._controller.history.append(stream_id, ts, original, translation)
+                    elif kind == "retrans_result":
+                        _, batch_id, seq, text = item
+                        self._on_retrans_result(batch_id, seq, text)
+                    elif kind == "retrans_error":
+                        _, batch_id, msg = item
+                        self._on_retrans_error(batch_id, msg)
                     elif kind == "status":
                         _, msg = item
                         self._status_var.set(f"状態: {msg}")
@@ -512,13 +531,21 @@ class TranslatorApp:
                     logging.exception("キューアイテム処理エラー: %r", item)
         except queue.Empty:
             pass
-        self.root.after(50, self._poll_queue)
+        # Adaptive polling: 10ms when active, 100ms when idle
+        interval = 10 if had_items else 100
+        self.root.after(interval, self._poll_queue)
+
+    def _flush_active_partials(self) -> None:
+        """進行中のpartialストリームをすべて確定する（新しいブロック挿入前に呼ぶ）"""
+        for sid in list(self._stream_buffers):
+            self._on_partial_end(sid)
 
     def _on_partial_start(self, stream_id: str, ts: str) -> None:
-        label, tag = _STREAM_META[stream_id]
+        self._flush_active_partials()
+        label, tag, langs = _STREAM_META[stream_id]
         with self._editable_result():
             mark = self._result_text.index("end-1c")
-            self._result_text.insert("end", f"[{ts}] {label}\n", tag)
+            self._result_text.insert("end", f"[{ts}] {label} {langs}\n", tag)
         self._stream_buffers[stream_id] = {"chunks": [], "mark": mark}
 
     def _on_partial(self, stream_id: str, text: str) -> None:
@@ -540,9 +567,10 @@ class TranslatorApp:
                 self._result_text.insert("end", "\n" + "─" * 50 + "\n", "separator")
 
     def _on_transcript(self, stream_id: str, ts: str, text: str) -> None:
-        label, tag = _STREAM_META[stream_id]
+        self._flush_active_partials()
+        label, tag, langs = _STREAM_META[stream_id]
         with self._editable_result():
-            self._result_text.insert("end", f"[{ts}] {label}\n", tag)
+            self._result_text.insert("end", f"[{ts}] {label} {langs}\n", tag)
             self._result_text.insert("end", f"原文: {text}\n", "original")
 
     def _append_error(self, msg: str) -> None:
@@ -553,6 +581,23 @@ class TranslatorApp:
     def _clear_result(self) -> None:
         with self._editable_result():
             self._result_text.delete("1.0", "end")
+        self._controller.history.clear()
+
+    # ─────────────────────────── 再翻訳 ───────────────────────────
+
+    def _open_retranslation(self) -> None:
+        if not self._controller.can_retranslate():
+            return
+        RetranslationDialog(self.root, self._controller)
+
+    def _on_retrans_result(self, batch_id: str, seq: int, text: str) -> None:
+        """再翻訳結果を開いているダイアログに転送"""
+        # ダイアログが結果を受け取るためUIキュー経由で通知済み
+        # RetranslationDialog が独自に poll する
+        pass
+
+    def _on_retrans_error(self, batch_id: str, msg: str) -> None:
+        self._append_error(f"[再翻訳] {msg}")
 
     def _export_result(self) -> None:
         text = self._result_text.get("1.0", "end").strip()
@@ -584,6 +629,7 @@ class TranslatorApp:
                 "ptt_enabled": self._ptt_var.get(),
                 "vad_enabled": self._vad_var.get(),
                 "two_phase_enabled": self._two_phase_var.get(),
+                "show_original": self._show_original_var.get(),
                 "whisper_enabled": self._whisper_var.get(),
                 "whisper_model": self._whisper_model_var.get(),
                 "whisper_lang": self._whisper_lang_var.get(),
@@ -618,6 +664,7 @@ class TranslatorApp:
         self._ptt_var.set(config.get("ptt_enabled", False))
         self._vad_var.set(config.get("vad_enabled", False))
         self._two_phase_var.set(config.get("two_phase_enabled", False))
+        self._show_original_var.set(config.get("show_original", True))
         self._whisper_var.set(config.get("whisper_enabled", False))
         self._whisper_model_var.set(config.get("whisper_model", "small"))
         self._whisper_lang_var.set(config.get("whisper_lang", "auto"))
@@ -643,3 +690,114 @@ class TranslatorApp:
             self._pa.terminate()
             self._pa = None
         self.root.destroy()
+
+
+class RetranslationDialog:
+    """再翻訳ダイアログ（別ウィンドウ）"""
+
+    def __init__(self, parent: tk.Tk, controller) -> None:
+        self._controller = controller
+        self._pending_batch_id: str = ""
+
+        self._win = tk.Toplevel(parent)
+        self._win.title("再翻訳 - 文脈付き再翻訳")
+        self._win.geometry("600x500")
+        self._win.resizable(True, True)
+
+        pad = {"padx": 8, "pady": 4}
+
+        # ── 対象選択 ──
+        ttk.Label(self._win, text="対象選択:").pack(anchor="w", **pad)
+        list_frame = ttk.Frame(self._win)
+        list_frame.pack(fill="both", expand=True, **pad)
+        self._listbox = tk.Listbox(list_frame, selectmode="browse", font=("Meiryo UI", 10))
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self._listbox.yview)
+        self._listbox.config(yscrollcommand=scrollbar.set)
+        self._listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # ── 範囲 + 実行ボタン ──
+        ctrl_frame = ttk.Frame(self._win)
+        ctrl_frame.pack(fill="x", **pad)
+        ttk.Label(ctrl_frame, text="前後の範囲:").pack(side="left")
+        self._range_var = tk.IntVar(value=3)
+        ttk.Spinbox(ctrl_frame, from_=1, to=10, textvariable=self._range_var, width=4).pack(side="left", padx=4)
+        ttk.Label(ctrl_frame, text="件").pack(side="left")
+        self._exec_btn = ttk.Button(ctrl_frame, text="再翻訳 実行", command=self._execute)
+        self._exec_btn.pack(side="left", padx=16)
+        self._status_label = ttk.Label(ctrl_frame, text="")
+        self._status_label.pack(side="left", padx=8)
+
+        # ── 結果表示 ──
+        ttk.Label(self._win, text="再翻訳結果:").pack(anchor="w", **pad)
+        self._result_text = scrolledtext.ScrolledText(
+            self._win, wrap="word", height=8, font=("Meiryo UI", 10), state="disabled",
+        )
+        self._result_text.pack(fill="both", expand=True, **pad)
+
+        self._entry_map: dict[int, int] = {}  # listbox index -> seq
+        self._refresh_list()
+        self._poll_results()
+
+    def _refresh_list(self) -> None:
+        self._listbox.delete(0, "end")
+        self._entry_map.clear()
+        entries = self._controller.history.all_entries()
+        for i, e in enumerate(entries):
+            label_name = "聴く" if e.stream_id == "listen" else "話す"
+            display = f"#{e.seq} [{e.timestamp}] {label_name}: {e.original[:50] or e.translation[:50]}"
+            self._listbox.insert("end", display)
+            self._entry_map[i] = e.seq
+
+    def _execute(self) -> None:
+        sel = self._listbox.curselection()
+        if not sel:
+            self._status_label.config(text="対象を選択してください")
+            return
+        seq = self._entry_map.get(sel[0])
+        if seq is None:
+            return
+        n = self._range_var.get()
+        self._status_label.config(text="再翻訳中...")
+        self._exec_btn.config(state="disabled")
+        self._pending_batch_id = self._controller.request_retranslation(seq, n)
+        if not self._pending_batch_id:
+            self._status_label.config(text="再翻訳不可")
+            self._exec_btn.config(state="normal")
+
+    def _poll_results(self) -> None:
+        if not self._win.winfo_exists():
+            return
+        # Check the UI queue for retrans events (they're also handled by main app)
+        # We poll the controller's UI queue for our batch_id
+        try:
+            ui_queue = self._controller._ui_queue
+            items_to_requeue = []
+            while True:
+                item = ui_queue.get_nowait()
+                if item[0] == "retrans_result" and item[1] == self._pending_batch_id:
+                    _, batch_id, seq, text = item
+                    self._show_result(seq, text)
+                elif item[0] == "retrans_error" and item[1] == self._pending_batch_id:
+                    _, batch_id, msg = item
+                    self._status_label.config(text=f"エラー: {msg}")
+                    self._exec_btn.config(state="normal")
+                else:
+                    items_to_requeue.append(item)
+        except queue.Empty:
+            pass
+        # Put back non-retrans items
+        for item in items_to_requeue:
+            ui_queue.put(item)
+        self._win.after(100, self._poll_results)
+
+    def _show_result(self, seq: int, text: str) -> None:
+        entry = self._controller.history.get_by_seq(seq)
+        self._result_text.config(state="normal")
+        self._result_text.delete("1.0", "end")
+        if entry:
+            self._result_text.insert("end", f"#{seq} 元の訳文: {entry.translation}\n")
+        self._result_text.insert("end", f"    再翻訳:   {text}\n")
+        self._result_text.config(state="disabled")
+        self._status_label.config(text="再翻訳完了")
+        self._exec_btn.config(state="normal")

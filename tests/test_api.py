@@ -271,17 +271,18 @@ class TestPhase0Streaming(unittest.TestCase):
 
 
 class TestPhase1STT(unittest.TestCase):
-    """Phase 1: STT only, transcript message and Phase 2 auto-submission."""
+    """Phase 1: STT only (non-streaming), transcript message and Phase 2 auto-submission."""
 
     def test_phase1_produces_transcript_and_phase2(self):
         """Phase 1 should produce transcript message and auto-submit Phase 2."""
-        chunks = [_make_chunk("Hello"), _make_chunk(" world")]
         client = MagicMock()
-        # First call: Phase 1 STT, second call: Phase 2 translation
+        # Phase 1: non-streaming response
+        phase1_response = MagicMock()
+        phase1_response.text = "Hello world"
+        client.models.generate_content.return_value = phase1_response
+        # Phase 2: streaming
         phase2_chunks = [_make_chunk("translated")]
-        client.models.generate_content_stream.side_effect = [
-            iter(chunks), iter(phase2_chunks)
-        ]
+        client.models.generate_content_stream.return_value = iter(phase2_chunks)
         ui_q = queue.Queue()
 
         with patch("realtime_translator.api.genai_types") as mock_types:
@@ -304,21 +305,45 @@ class TestPhase1STT(unittest.TestCase):
         self.assertIn("transcript", types)
         transcript_msg = [m for m in messages if m[0] == "transcript"][0]
         self.assertEqual(transcript_msg[1], "listen")  # stream_id
-        self.assertEqual(transcript_msg[3], "Hello world")  # joined text
+        self.assertEqual(transcript_msg[3], "Hello world")  # text
 
         # Phase 2 should have been auto-submitted and produced streaming output
         self.assertIn("partial_start", types)
         self.assertIn("partial", types)
         self.assertIn("partial_end", types)
 
+    def test_phase1_uses_non_streaming(self):
+        """Phase 1 should use generate_content (non-streaming), not generate_content_stream."""
+        client = MagicMock()
+        response = MagicMock()
+        response.text = "transcript"
+        client.models.generate_content.return_value = response
+        # Phase 2 streaming
+        client.models.generate_content_stream.return_value = iter([_make_chunk("ok")])
+        ui_q = queue.Queue()
+
+        with patch("realtime_translator.api.genai_types") as mock_types:
+            mock_types.Part.from_bytes.return_value = "audio_part"
+            worker = ApiWorker(ui_q, client=client, min_interval_sec=0)
+            worker.start()
+            worker.submit(ApiRequest(
+                wav_bytes=b"wav", prompt="stt",
+                stream_id="listen", phase=1, context="ctx"
+            ))
+            time.sleep(1.0)
+            worker.stop()
+
+        # Phase 1 used generate_content (non-streaming)
+        client.models.generate_content.assert_called_once()
+
     def test_phase1_calls_build_translation_prompt(self):
         """Phase 1 should call build_translation_prompt for Phase 2."""
-        chunks = [_make_chunk("some text")]
-        phase2_chunks = [_make_chunk("translation")]
         client = MagicMock()
-        client.models.generate_content_stream.side_effect = [
-            iter(chunks), iter(phase2_chunks)
-        ]
+        response = MagicMock()
+        response.text = "some text"
+        client.models.generate_content.return_value = response
+        phase2_chunks = [_make_chunk("translation")]
+        client.models.generate_content_stream.return_value = iter(phase2_chunks)
         ui_q = queue.Queue()
 
         with patch("realtime_translator.api.genai_types") as mock_types, \
@@ -394,8 +419,10 @@ class TestSilenceSentinel(unittest.TestCase):
 
     def test_silence_sentinel_no_transcript(self):
         """If transcript contains SILENCE_SENTINEL, no transcript message should be sent."""
-        chunks = [_make_chunk(SILENCE_SENTINEL)]
-        client = _mock_client(chunks)
+        client = MagicMock()
+        response = MagicMock()
+        response.text = SILENCE_SENTINEL
+        client.models.generate_content.return_value = response
         ui_q = queue.Queue()
 
         with patch("realtime_translator.api.genai_types") as mock_types:
@@ -418,9 +445,10 @@ class TestSilenceSentinel(unittest.TestCase):
 
     def test_silence_sentinel_embedded_no_phase2(self):
         """If transcript contains SILENCE_SENTINEL (even embedded), no Phase 2 submission."""
-        chunks = [_make_chunk(f"text {SILENCE_SENTINEL} more")]
         client = MagicMock()
-        client.models.generate_content_stream.return_value = iter(chunks)
+        response = MagicMock()
+        response.text = f"text {SILENCE_SENTINEL} more"
+        client.models.generate_content.return_value = response
         ui_q = queue.Queue()
 
         with patch("realtime_translator.api.genai_types") as mock_types:
@@ -442,8 +470,10 @@ class TestSilenceSentinel(unittest.TestCase):
 
     def test_empty_transcript_no_phase2(self):
         """If transcript is empty after strip, no Phase 2 submission."""
-        chunks = [_make_chunk("  "), _make_chunk("  ")]
-        client = _mock_client(chunks)
+        client = MagicMock()
+        response = MagicMock()
+        response.text = "    "
+        client.models.generate_content.return_value = response
         ui_q = queue.Queue()
 
         with patch("realtime_translator.api.genai_types") as mock_types:
@@ -560,8 +590,8 @@ class TestRateLimiting(unittest.TestCase):
         interval = 0.3
         worker = ApiWorker(ui_q, client=client, min_interval_sec=interval)
 
-        # Simulate a recent call
-        worker._last_call_time = time.monotonic()
+        # Simulate a recent call (phase 0 uses audio timer)
+        worker._last_audio_call_time = time.monotonic()
 
         with patch("realtime_translator.api.genai_types") as mock_types, \
              patch("realtime_translator.api.time.sleep") as mock_sleep:
@@ -582,7 +612,6 @@ class TestRateLimiting(unittest.TestCase):
         ui_q = queue.Queue()
 
         worker = ApiWorker(ui_q, client=client, min_interval_sec=5.0)
-        # _last_call_time defaults to 0.0, which is far in the past
 
         with patch("realtime_translator.api.genai_types") as mock_types, \
              patch("realtime_translator.api.time.sleep") as mock_sleep:
@@ -593,8 +622,8 @@ class TestRateLimiting(unittest.TestCase):
         # Should not sleep since elapsed >> min_interval
         mock_sleep.assert_not_called()
 
-    def test_last_call_time_updated_after_call(self):
-        """_last_call_time should be updated after each API call."""
+    def test_audio_call_time_updated_after_call(self):
+        """_last_audio_call_time should be updated after phase 0 call."""
         chunks = [_make_chunk("ok")]
         client = _mock_client(chunks)
         ui_q = queue.Queue()
@@ -607,10 +636,49 @@ class TestRateLimiting(unittest.TestCase):
             req = ApiRequest(wav_bytes=b"wav", prompt="p", stream_id="listen", phase=0)
             worker._call_api(req)
 
-        self.assertGreaterEqual(worker._last_call_time, before)
+        self.assertGreaterEqual(worker._last_audio_call_time, before)
+
+    def test_text_call_time_updated_after_phase2(self):
+        """_last_text_call_time should be updated after phase 2 call."""
+        chunks = [_make_chunk("ok")]
+        client = _mock_client(chunks)
+        ui_q = queue.Queue()
+
+        worker = ApiWorker(ui_q, client=client, min_interval_sec=0)
+        before = time.monotonic()
+
+        with patch("realtime_translator.api.genai_types") as mock_types:
+            req = ApiRequest(wav_bytes=None, prompt="p", stream_id="listen", phase=2)
+            worker._call_api(req)
+
+        self.assertGreaterEqual(worker._last_text_call_time, before)
+
+    def test_phase1_then_phase2_no_rate_limit_delay(self):
+        """Phase 1 (audio) then Phase 2 (text) should use separate rate limit timers."""
+        client = MagicMock()
+        response = MagicMock()
+        response.text = "transcript"
+        client.models.generate_content.return_value = response
+        client.models.generate_content_stream.return_value = iter([_make_chunk("ok")])
+        ui_q = queue.Queue()
+
+        worker = ApiWorker(ui_q, client=client, min_interval_sec=10.0)
+
+        with patch("realtime_translator.api.genai_types") as mock_types:
+            mock_types.Part.from_bytes.return_value = "audio_part"
+            # Phase 1 call
+            req1 = ApiRequest(wav_bytes=b"wav", prompt="p", stream_id="listen", phase=1, context="ctx")
+            worker._call_api(req1)
+            # Phase 2 should NOT be rate-limited by phase 1's timer
+            req2 = ApiRequest(wav_bytes=None, prompt="p", stream_id="listen", phase=2)
+            t0 = time.monotonic()
+            worker._call_api(req2)
+            elapsed = time.monotonic() - t0
+            # Should complete quickly, not waiting 10 seconds
+            self.assertLess(elapsed, 2.0)
 
     def test_last_call_time_updated_even_on_error(self):
-        """_last_call_time should be updated even when API call fails."""
+        """Rate limit time should be updated even when API call fails."""
         client = MagicMock()
         client.models.generate_content_stream.side_effect = RuntimeError("fail")
         ui_q = queue.Queue()
@@ -623,7 +691,7 @@ class TestRateLimiting(unittest.TestCase):
             req = ApiRequest(wav_bytes=b"wav", prompt="p", stream_id="listen", phase=0)
             worker._call_api(req)
 
-        self.assertGreaterEqual(worker._last_call_time, before)
+        self.assertGreaterEqual(worker._last_audio_call_time, before)
 
 
 class TestStopSentinel(unittest.TestCase):

@@ -288,15 +288,26 @@ class TestOpenRouterSSEComments(unittest.TestCase):
         self.assertNotIn("partial_end", types)
 
 
+def _make_non_streaming_response(content):
+    """Create a mock non-streaming response with choices[0].message.content."""
+    response = MagicMock()
+    message = MagicMock()
+    message.content = content
+    choice = MagicMock()
+    choice.message = message
+    response.choices = [choice]
+    return response
+
+
 class TestPhase1STT(unittest.TestCase):
-    """Phase 1: STT → transcript + phase=2 auto-submission."""
+    """Phase 1: STT → transcript + phase=2 auto-submission (non-streaming)."""
 
     def test_phase1_transcript_and_phase2(self):
-        phase1_chunks = [_make_chunk("Hello"), _make_chunk(" world")]
+        phase1_response = _make_non_streaming_response("Hello world")
         phase2_chunks = [_make_chunk("translated")]
         client = MagicMock()
         client.chat.completions.create.side_effect = [
-            iter(phase1_chunks), iter(phase2_chunks),
+            phase1_response, iter(phase2_chunks),
         ]
         ui_q = queue.Queue()
 
@@ -324,9 +335,36 @@ class TestPhase1STT(unittest.TestCase):
         self.assertIn("partial", types)
         self.assertIn("partial_end", types)
 
+    def test_phase1_uses_non_streaming(self):
+        """Phase 1 should use stream=False."""
+        phase1_response = _make_non_streaming_response("text")
+        phase2_chunks = [_make_chunk("ok")]
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            phase1_response, iter(phase2_chunks),
+        ]
+        ui_q = queue.Queue()
+
+        worker = OpenAiLlmWorker(
+            ui_q, client=client, min_interval_sec=0,
+            model="gpt-4o-audio-preview",
+        )
+        worker.start()
+        worker.submit(ApiRequest(
+            wav_bytes=b"wav", prompt="stt",
+            stream_id="listen", phase=1, context="ctx",
+        ))
+        time.sleep(1.0)
+        worker.stop()
+
+        # First call should be non-streaming
+        first_call = client.chat.completions.create.call_args_list[0]
+        self.assertFalse(first_call.kwargs.get("stream", True))
+
     def test_silence_sentinel_no_phase2(self):
-        chunks = [_make_chunk(SILENCE_SENTINEL)]
-        client = _mock_client(chunks)
+        response = _make_non_streaming_response(SILENCE_SENTINEL)
+        client = MagicMock()
+        client.chat.completions.create.return_value = response
         ui_q = queue.Queue()
 
         worker = OpenAiLlmWorker(
@@ -348,8 +386,9 @@ class TestPhase1STT(unittest.TestCase):
         self.assertNotIn("transcript", types)
 
     def test_empty_transcript_no_phase2(self):
-        chunks = [_make_chunk("  ")]
-        client = _mock_client(chunks)
+        response = _make_non_streaming_response("  ")
+        client = MagicMock()
+        client.chat.completions.create.return_value = response
         ui_q = queue.Queue()
 
         worker = OpenAiLlmWorker(
@@ -527,7 +566,7 @@ class TestRateLimiting(unittest.TestCase):
         interval = 0.3
         worker = OpenAiLlmWorker(ui_q, client=client, min_interval_sec=interval)
         worker._running = True
-        worker._last_call_time = time.monotonic()
+        worker._last_text_call_time = time.monotonic()
 
         req = ApiRequest(wav_bytes=None, prompt="p", stream_id="listen", phase=2)
         t0 = time.monotonic()
@@ -536,7 +575,7 @@ class TestRateLimiting(unittest.TestCase):
 
         self.assertGreaterEqual(elapsed, interval * 0.8)
 
-    def test_last_call_time_updated_after_call(self):
+    def test_text_call_time_updated_after_phase2(self):
         chunks = [_make_chunk("ok")]
         client = _mock_client(chunks)
         ui_q = queue.Queue()
@@ -546,7 +585,22 @@ class TestRateLimiting(unittest.TestCase):
         before = time.monotonic()
         req = ApiRequest(wav_bytes=None, prompt="p", stream_id="listen", phase=2)
         worker._call_api(req)
-        self.assertGreaterEqual(worker._last_call_time, before)
+        self.assertGreaterEqual(worker._last_text_call_time, before)
+
+    def test_audio_call_time_updated_after_phase0(self):
+        chunks = [_make_chunk("ok")]
+        client = _mock_client(chunks)
+        ui_q = queue.Queue()
+
+        worker = OpenAiLlmWorker(
+            ui_q, client=client, min_interval_sec=0,
+            model="gpt-4o-audio-preview",
+        )
+        worker._running = True
+        before = time.monotonic()
+        req = ApiRequest(wav_bytes=b"wav", prompt="p", stream_id="listen", phase=0)
+        worker._call_api(req)
+        self.assertGreaterEqual(worker._last_audio_call_time, before)
 
     def test_last_call_time_updated_on_error(self):
         client = MagicMock()
@@ -558,7 +612,33 @@ class TestRateLimiting(unittest.TestCase):
         before = time.monotonic()
         req = ApiRequest(wav_bytes=None, prompt="p", stream_id="listen", phase=2)
         worker._call_api(req)
-        self.assertGreaterEqual(worker._last_call_time, before)
+        self.assertGreaterEqual(worker._last_text_call_time, before)
+
+    def test_phase1_then_phase2_no_rate_limit_delay(self):
+        """Phase 1 (audio) then Phase 2 (text) use separate rate limit timers."""
+        phase1_response = _make_non_streaming_response("transcript")
+        phase2_chunks = [_make_chunk("ok")]
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            phase1_response, iter(phase2_chunks),
+        ]
+        ui_q = queue.Queue()
+
+        worker = OpenAiLlmWorker(
+            ui_q, client=client, min_interval_sec=10.0,
+            model="gpt-4o-audio-preview",
+        )
+        worker._running = True
+
+        # Phase 1 call
+        req1 = ApiRequest(wav_bytes=b"wav", prompt="p", stream_id="listen", phase=1, context="ctx")
+        worker._call_api(req1)
+        # Phase 2 should NOT be rate-limited by phase 1's timer
+        req2 = ApiRequest(wav_bytes=None, prompt="p", stream_id="listen", phase=2)
+        t0 = time.monotonic()
+        worker._call_api(req2)
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 2.0)
 
 
 class TestStopSentinel(unittest.TestCase):

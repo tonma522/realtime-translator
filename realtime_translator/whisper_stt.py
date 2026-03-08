@@ -44,15 +44,26 @@ class WhisperWorker:
         self._running = False
         self._thread: threading.Thread | None = None
         self._transcriber: WhisperTranscriber | None = None  # スレッド内で初期化
+        self._pending_requests = 0
+        self._is_busy = False
 
     def start(self) -> None:
         self._running = True
         self._thread = threading.Thread(target=self._worker_loop, name="WhisperWorker", daemon=True)
         self._thread.start()
 
+    @property
+    def pending_requests(self) -> int:
+        return self._pending_requests
+
+    @property
+    def is_busy(self) -> bool:
+        return self._is_busy
+
     def submit(self, wav_bytes: bytes, stream_id: str) -> None:
         if not self._running:
             return
+        self._pending_requests += 1
         enqueue_dropping_oldest(self._req_queue, (wav_bytes, stream_id), "WhisperWorker")
 
     def signal_stop(self) -> None:
@@ -87,6 +98,7 @@ class WhisperWorker:
                 break
             wav_bytes, stream_id = item
             ts = datetime.now().strftime("%H:%M:%S")
+            self._is_busy = True
             try:
                 transcript = self._transcriber.transcribe(wav_bytes)
                 if transcript and transcript.strip():
@@ -101,3 +113,6 @@ class WhisperWorker:
                         ))
             except Exception as e:
                 self._ui_queue.put(("error", stream_id, f"Whisper: {e}"))
+            finally:
+                self._is_busy = False
+                self._pending_requests = max(0, self._pending_requests - 1)
