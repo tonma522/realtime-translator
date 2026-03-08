@@ -590,3 +590,105 @@ class TestMultiBackendShutdown:
         assert all(w.stopped for w in api_workers)
         assert len(stt_workers) == 1
         assert stt_workers[0].stopped
+
+
+# ─────────────────────── Assist tests ───────────────────────
+
+class FakeAssistWorker:
+    def __init__(self, **kwargs):
+        self.started = False
+        self.stopped = False
+        self.joined = False
+        self.submitted = []
+        self.kwargs = kwargs
+
+    def start(self):
+        self.started = True
+
+    def signal_stop(self):
+        self.stopped = True
+
+    def join(self, timeout=10):
+        self.joined = True
+
+    def submit(self, request_type, context, n_history=20, previous_minutes=""):
+        call = (request_type, context, n_history, previous_minutes)
+        self.submitted.append(call)
+        return "fake_id"
+
+    def stop(self):
+        self.signal_stop()
+        self.join()
+
+
+class TestAssistIntegration:
+    def test_can_assist_requires_history(self):
+        ctrl, _ = _make_controller()
+        ctrl.start(_make_config())
+        assert not ctrl.can_assist()  # no history yet
+
+    def test_can_assist_with_history(self):
+        ctrl, _ = _make_controller()
+        ctrl.start(_make_config())
+        ctrl.history.append("listen", "12:00:00", "hello", "こんにちは")
+        assert ctrl.can_assist()
+
+    def test_can_assist_false_when_not_running(self):
+        ctrl, _ = _make_controller()
+        assert not ctrl.can_assist()
+
+    def test_request_reply_assist_returns_id(self):
+        assist_workers = []
+        def track_assist(**kwargs):
+            w = FakeAssistWorker(**kwargs)
+            assist_workers.append(w)
+            return w
+        ctrl, _ = _make_controller(assist_worker_factory=track_assist)
+        ctrl.start(_make_config())
+        ctrl.history.append("listen", "12:00:00", "hello", "こんにちは")
+        rid = ctrl.request_reply_assist()
+        assert rid == "fake_id"
+        assert len(assist_workers) == 1
+        assert assist_workers[0].submitted[0][0] == "reply_assist"
+
+    def test_request_minutes_returns_id(self):
+        assist_workers = []
+        def track_assist(**kwargs):
+            w = FakeAssistWorker(**kwargs)
+            assist_workers.append(w)
+            return w
+        ctrl, _ = _make_controller(assist_worker_factory=track_assist)
+        ctrl.start(_make_config())
+        ctrl.history.append("listen", "12:00:00", "hello", "こんにちは")
+        rid = ctrl.request_minutes(previous_minutes="prev")
+        assert rid == "fake_id"
+        assert assist_workers[0].submitted[0][0] == "minutes"
+        assert assist_workers[0].submitted[0][3] == "prev"
+
+    def test_assist_worker_factory_injection(self):
+        assist_workers = []
+        def track_assist(**kwargs):
+            w = FakeAssistWorker(**kwargs)
+            assist_workers.append(w)
+            return w
+        ctrl, _ = _make_controller(assist_worker_factory=track_assist)
+        ctrl.start(_make_config())
+        assert len(assist_workers) == 1
+        assert assist_workers[0].started
+
+    def test_assist_worker_stopped_on_stop(self):
+        assist_workers = []
+        def track_assist(**kwargs):
+            w = FakeAssistWorker(**kwargs)
+            assist_workers.append(w)
+            return w
+        ctrl, _ = _make_controller(assist_worker_factory=track_assist)
+        ctrl.start(_make_config())
+        ctrl.stop()
+        assert assist_workers[0].stopped
+        assert assist_workers[0].joined
+
+    def test_request_assist_empty_when_not_running(self):
+        ctrl, _ = _make_controller()
+        assert ctrl.request_reply_assist() == ""
+        assert ctrl.request_minutes() == ""

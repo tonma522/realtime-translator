@@ -42,6 +42,49 @@ def build_translation_prompt(stream_id: str, context: str, transcript: str) -> s
     )
 
 
+def build_reply_assist_prompt(context: str, history_block: str) -> str:
+    """返答アシスト: 会話履歴から返答候補を3つ提案"""
+    return (
+        "You are a meeting assistant.\n"
+        f"[Context] {context}\n\n"
+        "Below is the recent conversation flow:\n\n"
+        f"{history_block}\n\n"
+        "Based on this conversation, suggest 3 possible replies "
+        "that the Japanese speaker should say next.\n"
+        "For each suggestion, provide both Japanese and English.\n\n"
+        "Output format (strictly follow this):\n"
+        "1. [日本語] ...\n"
+        "   [English] ...\n"
+        "2. [日本語] ...\n"
+        "   [English] ...\n"
+        "3. [日本語] ...\n"
+        "   [English] ...\n"
+    )
+
+
+def build_minutes_prompt(
+    context: str, history_block: str, previous_minutes: str = "",
+) -> str:
+    """議事録生成: 会話履歴から議事録を生成/追記"""
+    if previous_minutes:
+        mode_instruction = (
+            "Below are the previous meeting minutes followed by new conversation.\n"
+            "Append a summary of the new conversation to the existing minutes.\n"
+            "Keep the existing content unchanged and add new sections.\n\n"
+            f"--- Previous Minutes ---\n{previous_minutes}\n--- End Previous Minutes ---\n\n"
+        )
+    else:
+        mode_instruction = "Create new meeting minutes from the conversation below.\n\n"
+    return (
+        "You are a meeting minutes writer.\n"
+        f"[Context] {context}\n\n"
+        f"{mode_instruction}"
+        f"Conversation:\n{history_block}\n\n"
+        "Write the minutes in Japanese. Use a chronological summary format with "
+        "time-based sections and bullet points for key discussion items and decisions."
+    )
+
+
 def build_retranslation_prompt(
     stream_id: str,
     context: str,

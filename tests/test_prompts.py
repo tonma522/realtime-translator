@@ -5,6 +5,8 @@ from realtime_translator.prompts import (
     build_stt_prompt,
     build_translation_prompt,
     build_retranslation_prompt,
+    build_reply_assist_prompt,
+    build_minutes_prompt,
 )
 
 
@@ -115,3 +117,46 @@ class TestBuildRetranslationPrompt:
     def test_prompt_is_english(self):
         result = build_retranslation_prompt("listen", "ctx", "block")
         assert "Re-translate" in result
+
+
+class TestBuildReplyAssistPrompt:
+    def test_contains_context(self):
+        result = build_reply_assist_prompt("生産会議", "history")
+        assert "生産会議" in result
+
+    def test_contains_history(self):
+        block = "[英語→日本語] Hello → こんにちは"
+        result = build_reply_assist_prompt("ctx", block)
+        assert block in result
+
+    def test_requests_three_suggestions(self):
+        result = build_reply_assist_prompt("ctx", "history")
+        assert "3" in result
+
+    def test_requests_bilingual_output(self):
+        result = build_reply_assist_prompt("ctx", "history")
+        assert "[日本語]" in result
+        assert "[English]" in result
+
+
+class TestBuildMinutesPrompt:
+    def test_new_minutes(self):
+        result = build_minutes_prompt("会議", "history block")
+        assert "会議" in result
+        assert "history block" in result
+        assert "Create new" in result
+        assert "Previous Minutes" not in result
+
+    def test_append_minutes(self):
+        result = build_minutes_prompt("ctx", "history", previous_minutes="existing minutes")
+        assert "existing minutes" in result
+        assert "Append" in result
+        assert "Previous Minutes" in result
+
+    def test_empty_previous_is_new(self):
+        result = build_minutes_prompt("ctx", "history", previous_minutes="")
+        assert "Create new" in result
+
+    def test_japanese_output_instruction(self):
+        result = build_minutes_prompt("ctx", "history")
+        assert "Japanese" in result

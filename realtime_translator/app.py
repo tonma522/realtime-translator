@@ -53,6 +53,7 @@ class TranslatorApp:
             on_status=lambda msg: self._status_var.set(f"状態: {msg}") if hasattr(self, "_status_var") else None,
         )
         self._stream_buffers: dict[str, dict] = {}
+        self._result_store: dict[str, tuple] = {}  # request_id -> (type, result_or_error)
         self._loopback_devices: list[dict] = []
         self._mic_devices: list[dict] = []
         self._saved_loopback_name: str = ""
@@ -343,6 +344,10 @@ class TranslatorApp:
         ttk.Button(btn_frame, text="エクスポート", command=self._export_result).pack(side="left", padx=4)
         self._retrans_btn = ttk.Button(btn_frame, text="再翻訳...", command=self._open_retranslation, state="disabled")
         self._retrans_btn.pack(side="left", padx=4)
+        self._assist_btn = ttk.Button(btn_frame, text="返答アシスト", command=self._open_reply_assist, state="disabled")
+        self._assist_btn.pack(side="left", padx=4)
+        self._minutes_btn = ttk.Button(btn_frame, text="議事録", command=self._open_minutes, state="disabled")
+        self._minutes_btn.pack(side="left", padx=4)
         self._save_btn = ttk.Button(btn_frame, text="設定保存", command=self._save_config)
         self._save_btn.pack(side="left", padx=4)
         self._ptt_frame = ttk.Frame(btn_frame)
@@ -470,6 +475,8 @@ class TranslatorApp:
         # UI updates after successful start
         self._start_btn.config(text="■ 翻訳停止")
         self._retrans_btn.config(state="normal" if self._controller.can_retranslate() else "disabled")
+        self._assist_btn.config(state="normal")
+        self._minutes_btn.config(state="normal")
         streams = [s for s, en in [("聴く", enable_listen), ("話す", enable_speak)] if en]
         mode = "Whisper" if self._controller.use_whisper else ("2フェーズ" if self._controller.use_two_phase else "通常")
         self._status_var.set(f"状態: 翻訳中... ({'+'.join(streams)}, {mode})")
@@ -495,9 +502,12 @@ class TranslatorApp:
 
         self._controller.stop()
         self._stream_buffers.clear()
+        self._result_store.clear()
 
         self._start_btn.config(text="▶ 翻訳開始")
         self._retrans_btn.config(state="disabled")
+        self._assist_btn.config(state="disabled")
+        self._minutes_btn.config(state="disabled")
         self._status_var.set("状態: 停止中")
 
     def _ptt_press(self) -> None:
@@ -552,10 +562,16 @@ class TranslatorApp:
                         self._controller.history.append(stream_id, ts, original, translation)
                     elif kind == "retrans_result":
                         _, batch_id, seq, text = item
-                        self._on_retrans_result(batch_id, seq, text)
+                        self._result_store[batch_id] = ("retrans_result", seq, text)
                     elif kind == "retrans_error":
                         _, batch_id, msg = item
-                        self._on_retrans_error(batch_id, msg)
+                        self._result_store[batch_id] = ("retrans_error", msg)
+                    elif kind == "assist_result":
+                        _, request_id, request_type, text = item
+                        self._result_store[request_id] = ("assist_result", request_type, text)
+                    elif kind == "assist_error":
+                        _, request_id, request_type, msg = item
+                        self._result_store[request_id] = ("assist_error", request_type, msg)
                     elif kind == "status":
                         _, msg = item
                         self._status_var.set(f"状態: {msg}")
@@ -617,19 +633,33 @@ class TranslatorApp:
 
     # ─────────────────────────── 再翻訳 ───────────────────────────
 
+    _retrans_dialog: "RetranslationDialog | None" = None
+    _assist_dialog: "ReplyAssistDialog | None" = None
+    _minutes_dialog: "MinutesDialog | None" = None
+
+    def _open_minutes(self) -> None:
+        if not self._controller.can_assist():
+            return
+        if self._minutes_dialog and self._minutes_dialog._win.winfo_exists():
+            self._minutes_dialog._win.focus_set()
+            return
+        self._minutes_dialog = MinutesDialog(self.root, self._controller, self._result_store)
+
+    def _open_reply_assist(self) -> None:
+        if not self._controller.can_assist():
+            return
+        if self._assist_dialog and self._assist_dialog._win.winfo_exists():
+            self._assist_dialog._win.focus_set()
+            return
+        self._assist_dialog = ReplyAssistDialog(self.root, self._controller, self._result_store)
+
     def _open_retranslation(self) -> None:
         if not self._controller.can_retranslate():
             return
-        RetranslationDialog(self.root, self._controller)
-
-    def _on_retrans_result(self, batch_id: str, seq: int, text: str) -> None:
-        """再翻訳結果を開いているダイアログに転送"""
-        # ダイアログが結果を受け取るためUIキュー経由で通知済み
-        # RetranslationDialog が独自に poll する
-        pass
-
-    def _on_retrans_error(self, batch_id: str, msg: str) -> None:
-        self._append_error(f"[再翻訳] {msg}")
+        if self._retrans_dialog and self._retrans_dialog._win.winfo_exists():
+            self._retrans_dialog._win.focus_set()
+            return
+        self._retrans_dialog = RetranslationDialog(self.root, self._controller, self._result_store)
 
     def _export_result(self) -> None:
         text = self._result_text.get("1.0", "end").strip()
@@ -731,8 +761,9 @@ class TranslatorApp:
 class RetranslationDialog:
     """再翻訳ダイアログ（別ウィンドウ）"""
 
-    def __init__(self, parent: tk.Tk, controller) -> None:
+    def __init__(self, parent: tk.Tk, controller, result_store: dict) -> None:
         self._controller = controller
+        self._result_store = result_store
         self._pending_batch_id: str = ""
 
         self._win = tk.Toplevel(parent)
@@ -804,27 +835,16 @@ class RetranslationDialog:
     def _poll_results(self) -> None:
         if not self._win.winfo_exists():
             return
-        # Check the UI queue for retrans events (they're also handled by main app)
-        # We poll the controller's UI queue for our batch_id
-        try:
-            ui_queue = self._controller._ui_queue
-            items_to_requeue = []
-            while True:
-                item = ui_queue.get_nowait()
-                if item[0] == "retrans_result" and item[1] == self._pending_batch_id:
-                    _, batch_id, seq, text = item
-                    self._show_result(seq, text)
-                elif item[0] == "retrans_error" and item[1] == self._pending_batch_id:
-                    _, batch_id, msg = item
-                    self._status_label.config(text=f"エラー: {msg}")
-                    self._exec_btn.config(state="normal")
-                else:
-                    items_to_requeue.append(item)
-        except queue.Empty:
-            pass
-        # Put back non-retrans items
-        for item in items_to_requeue:
-            ui_queue.put(item)
+        if self._pending_batch_id and self._pending_batch_id in self._result_store:
+            result = self._result_store.pop(self._pending_batch_id)
+            if result[0] == "retrans_result":
+                _, seq, text = result
+                self._show_result(seq, text)
+            elif result[0] == "retrans_error":
+                _, msg = result
+                self._status_label.config(text=f"エラー: {msg}")
+                self._exec_btn.config(state="normal")
+            self._pending_batch_id = ""
         self._win.after(100, self._poll_results)
 
     def _show_result(self, seq: int, text: str) -> None:
@@ -837,3 +857,145 @@ class RetranslationDialog:
         self._result_text.config(state="disabled")
         self._status_label.config(text="再翻訳完了")
         self._exec_btn.config(state="normal")
+
+
+class ReplyAssistDialog:
+    """返答アシストダイアログ（別ウィンドウ）"""
+
+    def __init__(self, parent: tk.Tk, controller, result_store: dict) -> None:
+        self._controller = controller
+        self._result_store = result_store
+        self._pending_request_id: str = ""
+
+        self._win = tk.Toplevel(parent)
+        self._win.title("返答アシスト")
+        self._win.geometry("550x400")
+        self._win.resizable(True, True)
+
+        pad = {"padx": 8, "pady": 4}
+
+        # ── 実行ボタン + ステータス ──
+        ctrl_frame = ttk.Frame(self._win)
+        ctrl_frame.pack(fill="x", **pad)
+        self._exec_btn = ttk.Button(ctrl_frame, text="アシスト実行", command=self._execute)
+        self._exec_btn.pack(side="left", padx=4)
+        self._status_label = ttk.Label(ctrl_frame, text="待機中")
+        self._status_label.pack(side="left", padx=16)
+
+        # ── 結果表示 ──
+        ttk.Label(self._win, text="提案:").pack(anchor="w", **pad)
+        self._result_text = scrolledtext.ScrolledText(
+            self._win, wrap="word", height=16, font=("Meiryo UI", 10), state="disabled",
+        )
+        self._result_text.pack(fill="both", expand=True, **pad)
+
+        self._poll_results()
+
+    def _execute(self) -> None:
+        if not self._controller.can_assist():
+            self._status_label.config(text="履歴がありません")
+            return
+        self._status_label.config(text="アシスト実行中...")
+        self._exec_btn.config(state="disabled")
+        self._pending_request_id = self._controller.request_reply_assist()
+        if not self._pending_request_id:
+            self._status_label.config(text="アシスト不可")
+            self._exec_btn.config(state="normal")
+
+    def _poll_results(self) -> None:
+        if not self._win.winfo_exists():
+            return
+        if self._pending_request_id and self._pending_request_id in self._result_store:
+            result = self._result_store.pop(self._pending_request_id)
+            if result[0] == "assist_result":
+                _, request_type, text = result
+                self._result_text.config(state="normal")
+                self._result_text.delete("1.0", "end")
+                self._result_text.insert("end", text)
+                self._result_text.config(state="disabled")
+                self._status_label.config(text="完了")
+            elif result[0] == "assist_error":
+                _, request_type, msg = result
+                self._status_label.config(text=f"エラー: {msg}")
+            self._exec_btn.config(state="normal")
+            self._pending_request_id = ""
+        self._win.after(100, self._poll_results)
+
+
+class MinutesDialog:
+    """議事録ダイアログ（別ウィンドウ）"""
+
+    def __init__(self, parent: tk.Tk, controller, result_store: dict) -> None:
+        self._controller = controller
+        self._result_store = result_store
+        self._pending_request_id: str = ""
+
+        self._win = tk.Toplevel(parent)
+        self._win.title("議事録")
+        self._win.geometry("600x500")
+        self._win.resizable(True, True)
+
+        pad = {"padx": 8, "pady": 4}
+
+        # ── ボタン行 ──
+        ctrl_frame = ttk.Frame(self._win)
+        ctrl_frame.pack(fill="x", **pad)
+        self._exec_btn = ttk.Button(ctrl_frame, text="議事録 生成", command=self._execute)
+        self._exec_btn.pack(side="left", padx=4)
+        self._export_btn = ttk.Button(ctrl_frame, text="エクスポート", command=self._export)
+        self._export_btn.pack(side="left", padx=4)
+        self._status_label = ttk.Label(ctrl_frame, text="待機中")
+        self._status_label.pack(side="left", padx=16)
+
+        # ── 議事録テキスト ──
+        ttk.Label(self._win, text="議事録:").pack(anchor="w", **pad)
+        self._result_text = scrolledtext.ScrolledText(
+            self._win, wrap="word", height=20, font=("Meiryo UI", 10),
+        )
+        self._result_text.pack(fill="both", expand=True, **pad)
+
+        self._poll_results()
+
+    def _execute(self) -> None:
+        if not self._controller.can_assist():
+            self._status_label.config(text="履歴がありません")
+            return
+        previous = self._result_text.get("1.0", "end").strip()
+        self._status_label.config(text="議事録生成中...")
+        self._exec_btn.config(state="disabled")
+        self._pending_request_id = self._controller.request_minutes(previous_minutes=previous)
+        if not self._pending_request_id:
+            self._status_label.config(text="生成不可")
+            self._exec_btn.config(state="normal")
+
+    def _poll_results(self) -> None:
+        if not self._win.winfo_exists():
+            return
+        if self._pending_request_id and self._pending_request_id in self._result_store:
+            result = self._result_store.pop(self._pending_request_id)
+            if result[0] == "assist_result":
+                _, request_type, text = result
+                self._result_text.delete("1.0", "end")
+                self._result_text.insert("end", text)
+                self._status_label.config(text="生成完了")
+            elif result[0] == "assist_error":
+                _, request_type, msg = result
+                self._status_label.config(text=f"エラー: {msg}")
+            self._exec_btn.config(state="normal")
+            self._pending_request_id = ""
+        self._win.after(100, self._poll_results)
+
+    def _export(self) -> None:
+        text = self._result_text.get("1.0", "end").strip()
+        if not text:
+            self._status_label.config(text="エクスポートするテキストがありません")
+            return
+        from datetime import datetime
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("テキストファイル", "*.txt")],
+            initialfile=f"minutes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+        )
+        if path:
+            Path(path).write_text(text, encoding="utf-8")
+            self._status_label.config(text=f"エクスポート完了: {Path(path).name}")

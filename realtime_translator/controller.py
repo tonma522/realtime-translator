@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .assist import AssistWorker
 from .audio import AudioCapture
 from .api import ApiWorker, ApiRequest
 from .history import TranslationHistory
@@ -36,6 +37,7 @@ OpenAiLlmWorkerFactory = Callable[..., OpenAiLlmWorker]
 OpenAiSttWorkerFactory = Callable[..., OpenAiSttWorker]
 GenaiClientFactory = Callable[[str], Any]
 OpenAiClientFactory = Callable[..., Any]
+AssistWorkerFactory = Callable[..., AssistWorker]
 
 
 @dataclass
@@ -94,6 +96,7 @@ class TranslatorController:
         openai_client_factory: OpenAiClientFactory | None = None,
         openai_llm_worker_factory: OpenAiLlmWorkerFactory | None = None,
         openai_stt_worker_factory: OpenAiSttWorkerFactory | None = None,
+        assist_worker_factory: AssistWorkerFactory | None = None,
     ) -> None:
         self._ui_queue = ui_queue
         self._capture_factory = capture_factory
@@ -103,6 +106,7 @@ class TranslatorController:
         self._openai_client_factory = openai_client_factory or _default_openai_client_factory
         self._openai_llm_worker_factory = openai_llm_worker_factory or OpenAiLlmWorker
         self._openai_stt_worker_factory = openai_stt_worker_factory or OpenAiSttWorker
+        self._assist_worker_factory = assist_worker_factory or AssistWorker
         self._on_error = on_error
         self._on_status = on_status
 
@@ -113,6 +117,7 @@ class TranslatorController:
         self._whisper_worker: WhisperWorker | None = None
         self._openai_stt_worker: OpenAiSttWorker | None = None
         self._retrans_worker: RetranslationWorker | None = None
+        self._assist_worker: AssistWorker | None = None
         self._capture_listen: AudioCapture | None = None
         self._capture_speak: AudioCapture | None = None
         self._history = TranslationHistory()
@@ -153,6 +158,22 @@ class TranslatorController:
         return self._running and (
             self._use_two_phase or self._use_whisper or self._stt_backend in ("openai", "openrouter")
         )
+
+    def can_assist(self) -> bool:
+        """返答アシスト / 議事録が利用可能か"""
+        return self._running and len(self._history.all_entries()) > 0
+
+    def request_reply_assist(self, n_history: int = 20) -> str:
+        """返答アシストをリクエスト。request_id を返す"""
+        if not self.can_assist() or self._assist_worker is None:
+            return ""
+        return self._assist_worker.submit("reply_assist", self._context, n_history=n_history)
+
+    def request_minutes(self, previous_minutes: str = "") -> str:
+        """議事録生成をリクエスト。request_id を返す"""
+        if not self.can_assist() or self._assist_worker is None:
+            return ""
+        return self._assist_worker.submit("minutes", self._context, previous_minutes=previous_minutes)
 
     def request_retranslation(self, center_seq: int, n_surrounding: int) -> str:
         """再翻訳をリクエスト。batch_id を返す"""
@@ -333,6 +354,24 @@ class TranslatorController:
         )
         self._retrans_worker.start()
 
+        # ── Create assist worker ──
+        # monitored_workers includes LLM + STT workers (not assist itself)
+        monitored = list(workers_list)
+        if self._whisper_worker:
+            monitored.append(self._whisper_worker)
+        if self._openai_stt_worker:
+            monitored.append(self._openai_stt_worker)
+        self._assist_worker = self._assist_worker_factory(
+            ui_queue=self._ui_queue,
+            history=self._history,
+            monitored_workers=monitored,
+            llm_backend=llm_backend,
+            model=retrans_model,
+            api_key=retrans_api_key,
+            client_factory=retrans_client_factory,
+        )
+        self._assist_worker.start()
+
     def _rollback_started_workers(self) -> None:
         """起動途中で例外が発生した場合、既に起動済みのワーカーを停止する"""
         # stop() は _running ガードがあるので一時的に True にして再利用する
@@ -426,6 +465,11 @@ class TranslatorController:
             retrans.signal_stop()
             self._retrans_worker = None
 
+        assist = self._assist_worker
+        if assist:
+            assist.signal_stop()
+            self._assist_worker = None
+
         api_workers = []
         for w in (self._api_worker_listen, self._api_worker_speak):
             if w:
@@ -443,6 +487,8 @@ class TranslatorController:
             openai_stt.join(timeout=10)
         if retrans:
             retrans.join(timeout=5)
+        if assist:
+            assist.join(timeout=5)
         for w in api_workers:
             w.join(timeout=10)
 
