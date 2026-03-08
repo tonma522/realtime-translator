@@ -31,6 +31,13 @@ except ImportError:
     WhisperModel = None
     WHISPER_AVAILABLE = False
 
+try:
+    import openai as _openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    _openai = None
+    OPENAI_AVAILABLE = False
+
 CONFIG_PATH = Path.home() / ".realtime_translator_config.json"
 LOG_PATH = Path.home() / ".realtime_translator.log"
 GEMINI_MODEL = "gemini-2.5-flash"
@@ -38,9 +45,14 @@ MIN_API_INTERVAL_SEC = 4.0   # Free tier 15RPM
 API_QUEUE_MAXSIZE = 3
 AUDIO_CHUNK_SIZE = 1024
 SILENCE_RMS_THRESHOLD = 200      # ループバック向け
-MIC_SILENCE_RMS_THRESHOLD = 500  # マイク誤検知防止
+MIC_SILENCE_RMS_THRESHOLD = 150  # マイク誤検知防止
 SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM = 2 bytes per sample
 SILENCE_SENTINEL = "(無音)"
+
+# OpenAI / OpenRouter
+OPENAI_CHAT_MODEL = "gpt-4o"
+OPENROUTER_DEFAULT_MODEL = "google/gemini-2.0-flash-001"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 STREAM_LANGS: dict[str, tuple[str, str]] = {
     "listen": ("英語", "日本語"),
