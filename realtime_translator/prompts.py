@@ -2,6 +2,11 @@
 from .constants import SILENCE_SENTINEL
 from .stream_modes import get_stream_languages, is_auto_stream
 
+SPOKEN_TRANSLATION_INSTRUCTION = (
+    "Translate into natural spoken language suitable for live interpretation.\n"
+    "Do not change, weaken, or alter numbers, units, negation, conditions, quantities, or deadlines.\n"
+)
+
 
 def build_prompt(stream_id: str, context: str, show_original: bool = True) -> str:
     """通常モード: 音声→STT+翻訳 (phase=0)"""
@@ -10,6 +15,7 @@ def build_prompt(stream_id: str, context: str, show_original: bool = True) -> st
             "You are a realtime translation assistant.\n"
             f"[Context] {context}\n\n"
             "Decide whether the input is English or Japanese and translate it to the opposite language.\n"
+            f"{SPOKEN_TRANSLATION_INSTRUCTION}"
             "Reply in this exact format:\n"
             "DIRECTION: en_ja | ja_en\n"
             "TRANSLATION: <translated text>\n\n"
@@ -28,6 +34,7 @@ def build_prompt(stream_id: str, context: str, show_original: bool = True) -> st
         "You are a realtime translation assistant.\n"
         f"[Context] {context}\n\n"
         f"Listen to the audio and translate {src} to {dst}.\n"
+        f"{SPOKEN_TRANSLATION_INSTRUCTION}"
         f"{output_fmt}\n\n"
         f"If silent or inaudible, respond with only \"{SILENCE_SENTINEL}\"."
     )
@@ -49,6 +56,7 @@ def build_translation_prompt(stream_id: str, context: str, transcript: str) -> s
             "You are a realtime translation assistant.\n"
             f"[Context] {context}\n\n"
             "Decide whether the following text is English or Japanese and translate it to the opposite language.\n"
+            f"{SPOKEN_TRANSLATION_INSTRUCTION}"
             f"Text: {transcript}\n"
             "Reply in this exact format:\n"
             "DIRECTION: en_ja | ja_en\n"
@@ -58,6 +66,7 @@ def build_translation_prompt(stream_id: str, context: str, transcript: str) -> s
     return (
         f"[Context] {context}\n"
         f"Translate the following {src} text to {dst}.\n"
+        f"{SPOKEN_TRANSLATION_INSTRUCTION}"
         f"Text: {transcript}\n"
         "Output only the translation."
     )
@@ -120,5 +129,6 @@ def build_retranslation_prompt(
         "\">>>\" using the surrounding context for better accuracy.\n\n"
         f"{history_block}\n\n"
         f"Re-translate the \">>>\" entry from {src} to {dst}.\n"
+        f"{SPOKEN_TRANSLATION_INSTRUCTION}"
         "Output only the translation."
     )
