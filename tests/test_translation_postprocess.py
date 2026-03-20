@@ -60,9 +60,27 @@ def test_decimal_comma_ra_is_normalized():
     )
 
 
+def test_ra_annotation_does_not_reenter_micron_annotation():
+    assert annotate_translation("Ra 35", output_language="ja") == "Ra 35 (Ra 35 um)"
+
+
+def test_negative_range_annotation_is_supported():
+    assert annotate_translation("-10 - -5 C", output_language="ja") == "-10 - -5 C (14.0 F-23.0 F)"
+
+
 def test_partial_failure_returns_original_text(monkeypatch):
     def _boom(*args, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr("realtime_translator.translation_postprocess._annotate_text", _boom)
     assert annotate_translation("12 mm", output_language="en") == "12 mm"
+
+
+def test_partial_failure_is_logged(caplog, monkeypatch):
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("realtime_translator.translation_postprocess._annotate_text", _boom)
+    with caplog.at_level("ERROR"):
+        assert annotate_translation("12 mm", output_language="en") == "12 mm"
+    assert "translation annotation failed" in caplog.text

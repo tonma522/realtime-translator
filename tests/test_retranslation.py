@@ -170,6 +170,32 @@ class TestRetranslationWorker:
 
         assert result == "35 psi"
 
+    def test_retranslation_auto_stream_resolves_output_language_from_source_default(self):
+        ui_q = queue.Queue()
+        h = TranslationHistory()
+        h.append(
+            "listen",
+            "12:00:00",
+            "Hello",
+            "こんにちは",
+            virtual_stream_id="listen_auto",
+            resolved_direction=None,
+        )
+        worker = RetranslationWorker(
+            ui_queue=ui_q, history=h, workers=[],
+            llm_backend="gemini", model="gemini-2.0-flash", api_key="key",
+            min_interval_sec=0,
+            client_factory=lambda: MagicMock(),
+        )
+        req = type("Req", (), {"center_seq": 1, "n_surrounding": 0, "context": "ctx", "batch_id": "batch"})()
+
+        with patch.object(worker, "_call_gemini", return_value="12 mm"), \
+             patch("realtime_translator.retranslation.annotate_translation", return_value="annotated") as annotate:
+            result = worker._execute_retranslation(req, MagicMock())
+
+        assert result == "annotated"
+        annotate.assert_called_once_with("12 mm", output_language="ja")
+
     def test_missing_entry_error(self):
         ui_q = queue.Queue()
         h = TranslationHistory()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -20,12 +21,13 @@ from .unit_tables import (
 _NUMBER_RE = r"[+-]?\d+(?:\.\d+)?"
 _SIGNED_NUMBER_RE = r"[±+-]?\d+(?:\.\d+)?"
 _RANGE_NUMBER_RE = r"[+-]?\d+(?:\.\d+)?\s*-\s*[+-]?\d+(?:\.\d+)?"
+_RANGE_VALUE_PATTERN = re.compile(r"^\s*(?P<start>[+-]?\d+(?:\.\d+)?)\s*-\s*(?P<end>[+-]?\d+(?:\.\d+)?)\s*$")
 
 _RA_PATTERN = re.compile(r"(?<!\w)(Ra)\s*(%s)(?!\s*(?:um|μm|micron)\b)" % _SIGNED_NUMBER_RE)
 _HASH_PATTERN = re.compile(r"(?<!\w)(#\d+)(?!\s*line\b)")
 _FEPA_PATTERN = re.compile(r"(?<!\w)(P\d+)\b")
 _MESH_PATTERN = re.compile(r"(?<!\w)(%s)\s*(mesh)\b" % _NUMBER_RE, re.IGNORECASE)
-_MICRON_PATTERN = re.compile(r"(?<!\w)(%s)\s*(um|μm|micron|microns)\b" % _SIGNED_NUMBER_RE, re.IGNORECASE)
+_MICRON_PATTERN = re.compile(r"(?<!\w)(?<!Ra )(%s)\s*(um|μm|micron|microns)\b" % _SIGNED_NUMBER_RE, re.IGNORECASE)
 _UNIT_PATTERN = re.compile(
     r"(?<![\w#])(?P<number>%s|%s)\s*(?P<unit>mm|cm|m|in|ft|g|kg|lb|C|F|Nm|lbf·ft|lbf-ft|MPa|bar|psi)\b"
     % (_RANGE_NUMBER_RE, _SIGNED_NUMBER_RE),
@@ -99,6 +101,7 @@ def annotate_translation(text: str, *, output_language: str) -> str:
     try:
         return _annotate_text(text, output_language=output_language)
     except Exception:
+        logging.exception("translation annotation failed; keeping raw translation")
         return text
 
 
@@ -216,8 +219,10 @@ def _normalize_unit(unit_text: str) -> str:
 
 
 def _build_unit_annotation(number_text: str, unit_text: str, language: str) -> str | None:
-    if "-" in number_text and not number_text.startswith("-"):
-        start_text, end_text = [part.strip() for part in number_text.split("-", 1)]
+    range_match = _RANGE_VALUE_PATTERN.fullmatch(number_text)
+    if range_match is not None:
+        start_text = range_match.group("start")
+        end_text = range_match.group("end")
         start_note = _convert_single_value(start_text, unit_text)
         end_note = _convert_single_value(end_text, unit_text)
         if not start_note or not end_note:
