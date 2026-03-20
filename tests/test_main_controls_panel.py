@@ -9,26 +9,30 @@ os.environ["TK_LIBRARY"] = os.path.join(_PYTHON_DIR, "tcl", "tk8.6")
 
 from realtime_translator.main_controls_panel import MainControlsPanel
 
+_ROOT = None
+
 
 def _make_root():
+    global _ROOT
     import tkinter as tk
-    root = tk.Tk()
-    root.withdraw()
-    return root
+    if _ROOT is None:
+        _ROOT = tk.Tk()
+        _ROOT.withdraw()
+    return _ROOT
 
 
 def test_session_summary_shows_direction_and_mode():
     root = _make_root()
-    try:
-        panel = MainControlsPanel(
-            root,
-            on_toggle=lambda: None,
-            on_open_settings=lambda: None,
-            on_reload_devices=lambda: None,
-            on_clear=lambda: None,
-            on_export=lambda: None,
-        )
+    panel = MainControlsPanel(
+        root,
+        on_toggle=lambda: None,
+        on_open_settings=lambda: None,
+        on_reload_devices=lambda: None,
+        on_clear=lambda: None,
+        on_export=lambda: None,
+    )
 
+    try:
         panel.apply_session_summary(
             listen_enabled=True,
             speak_enabled=True,
@@ -49,33 +53,33 @@ def test_session_summary_shows_direction_and_mode():
         assert "STT: Gemini (内蔵) / 翻訳: Gemini" in dumped
         assert "構成更新: 15:42:18" in dumped
     finally:
-        root.destroy()
+        panel.frame.destroy()
 
 
 def test_blocker_card_visible_when_message_present():
     root = _make_root()
-    try:
-        panel = MainControlsPanel(root, on_toggle=lambda: None, on_open_settings=lambda: None)
+    panel = MainControlsPanel(root, on_toggle=lambda: None, on_open_settings=lambda: None)
 
+    try:
         panel.set_blocker("APIキーが未設定")
 
         assert panel.blocker_visible() is True
     finally:
-        root.destroy()
+        panel.frame.destroy()
 
 
 def test_quick_actions_support_state_and_helper_text():
     root = _make_root()
-    try:
-        panel = MainControlsPanel(
-            root,
-            on_toggle=lambda: None,
-            on_open_settings=lambda: None,
-            on_reload_devices=lambda: None,
-            on_clear=lambda: None,
-            on_export=lambda: None,
-        )
+    panel = MainControlsPanel(
+        root,
+        on_toggle=lambda: None,
+        on_open_settings=lambda: None,
+        on_reload_devices=lambda: None,
+        on_clear=lambda: None,
+        on_export=lambda: None,
+    )
 
+    try:
         panel.set_quick_action_state(
             reload_enabled=False,
             clear_enabled=False,
@@ -91,21 +95,21 @@ def test_quick_actions_support_state_and_helper_text():
         }
         assert panel.quick_action_helper_text() == "初期化中"
     finally:
-        root.destroy()
+        panel.frame.destroy()
 
 
 def test_quick_actions_reflow_between_two_columns_and_single_column():
     root = _make_root()
-    try:
-        panel = MainControlsPanel(
-            root,
-            on_toggle=lambda: None,
-            on_open_settings=lambda: None,
-            on_reload_devices=lambda: None,
-            on_clear=lambda: None,
-            on_export=lambda: None,
-        )
+    panel = MainControlsPanel(
+        root,
+        on_toggle=lambda: None,
+        on_open_settings=lambda: None,
+        on_reload_devices=lambda: None,
+        on_clear=lambda: None,
+        on_export=lambda: None,
+    )
 
+    try:
         panel._layout_quick_actions(420)
         assert panel.quick_action_grid_positions() == {
             "reload": (0, 0),
@@ -120,4 +124,4 @@ def test_quick_actions_reflow_between_two_columns_and_single_column():
             "export": (2, 0),
         }
     finally:
-        root.destroy()
+        panel.frame.destroy()

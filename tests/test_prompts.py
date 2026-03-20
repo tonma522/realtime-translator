@@ -70,6 +70,21 @@ class TestBuildPrompt:
         assert "原文:" in prompt
         assert "訳文:" in prompt
 
+    def test_build_prompt_requests_spoken_translation(self):
+        prompt = build_prompt("listen_en_ja", "factory meeting", show_original=False)
+        lowered = prompt.lower()
+        assert "spoken" in lowered
+        assert "natural" in lowered
+        assert "negation" in lowered
+        assert "conditions" in lowered
+
+    def test_auto_direction_prompt_preserves_numbers_and_conditions(self):
+        prompt = build_prompt("listen_auto", "factory meeting", show_original=False)
+        lowered = prompt.lower()
+        assert "numbers" in lowered
+        assert "units" in lowered
+        assert "conditions" in lowered
+
 
 class TestBuildSttPrompt:
     def test_listen_transcribes_english(self):
@@ -119,6 +134,14 @@ class TestBuildTranslationPrompt:
         assert "DIRECTION:" in result
         assert "TRANSLATION:" in result
 
+    def test_build_translation_prompt_preserves_numbers_and_conditions(self):
+        prompt = build_translation_prompt("listen_en_ja", "factory meeting", "torque is 10 Nm")
+        lowered = prompt.lower()
+        assert "do not change" in lowered
+        assert "numbers" in lowered
+        assert "units" in lowered
+        assert "deadlines" in lowered
+
 
 class TestBuildRetranslationPrompt:
     def test_contains_context(self):
@@ -142,6 +165,12 @@ class TestBuildRetranslationPrompt:
     def test_prompt_is_english(self):
         result = build_retranslation_prompt("listen", "ctx", "block")
         assert "Re-translate" in result
+
+    def test_build_retranslation_prompt_requests_spoken_translation(self):
+        prompt = build_retranslation_prompt("listen_en_ja", "factory meeting", ">>> hello")
+        lowered = prompt.lower()
+        assert "spoken" in lowered
+        assert "natural" in lowered
 
 
 class TestBuildReplyAssistPrompt:

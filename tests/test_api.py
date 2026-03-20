@@ -297,6 +297,29 @@ class TestPhase0Streaming(unittest.TestCase):
         self.assertEqual(done[6], "こんにちは")
         self.assertIsNone(done[7])
 
+    def test_api_worker_translation_done_payload_stays_raw_text(self):
+        chunks = [_make_chunk("DIRECTION: en_ja\nTRANSLATION: "), _make_chunk("こんにちは")]
+        client = _mock_client(chunks)
+        ui_q = queue.Queue()
+
+        with patch("realtime_translator.api.genai_types") as mock_types:
+            mock_types.Part.from_bytes.return_value = "audio_part"
+            worker = ApiWorker(ui_q, client=client, min_interval_sec=0)
+            worker.start()
+            worker.submit(ApiRequest(
+                wav_bytes=b"wav", prompt="p", stream_id="listen_auto", phase=0,
+            ))
+            time.sleep(0.5)
+            worker.stop()
+
+        messages = []
+        while not ui_q.empty():
+            messages.append(ui_q.get_nowait())
+
+        done = [m for m in messages if m[0] == "translation_done"][0]
+        self.assertEqual(done[6], "こんにちは")
+        self.assertNotIn("0.47 in", done[6])
+
     def test_auto_stream_direction_parse_failure_emits_incomplete_result(self):
         chunks = [_make_chunk("DIRECTION: maybe\nTRANSLATION: ???")]
         client = _mock_client(chunks)

@@ -10,7 +10,8 @@ from typing import Any
 from .constants import STREAM_LANGS
 from .history import TranslationHistory
 from .prompts import build_retranslation_prompt
-from .stream_modes import STREAM_DIRECTION_LANGS
+from .stream_modes import STREAM_DIRECTION_LANGS, split_stream_id
+from .translation_postprocess import annotate_translation
 from .worker_utils import send_stop_sentinel
 
 
@@ -136,9 +137,18 @@ class RetranslationWorker:
         prompt = build_retranslation_prompt(self._resolve_prompt_stream_id(entry), req.context, history_block)
 
         if self._llm_backend == "gemini":
-            return self._call_gemini(client, prompt)
+            result = self._call_gemini(client, prompt)
         else:
-            return self._call_openai(client, prompt)
+            result = self._call_openai(client, prompt)
+
+        try:
+            return annotate_translation(
+                result,
+                output_language=self._resolve_output_language(entry),
+            )
+        except Exception:
+            logging.exception("retranslation annotation failed; keeping raw translation")
+            return result
 
     def _format_history_block(self, entries: list, center_seq: int) -> str:
         lines = []
@@ -164,6 +174,17 @@ class RetranslationWorker:
         if entry.virtual_stream_id in STREAM_LANGS:
             return STREAM_LANGS[entry.virtual_stream_id]
         return STREAM_LANGS.get(entry.stream_id, ("?", "?"))
+
+    def _resolve_output_language(self, entry) -> str:
+        if entry.resolved_direction == "en_ja":
+            return "ja"
+        if entry.resolved_direction == "ja_en":
+            return "en"
+        stream_id = self._resolve_prompt_stream_id(entry)
+        source_stream_id, mode = split_stream_id(stream_id)
+        if mode == "auto":
+            _, mode = split_stream_id(source_stream_id)
+        return "ja" if mode == "en_ja" else "en"
 
     def _call_gemini(self, client, prompt: str) -> str:
         from .api import _generate_config_for_model

@@ -1,7 +1,7 @@
 """Tests for RetranslationWorker"""
 import queue
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -133,6 +133,68 @@ class TestRetranslationWorker:
         results = [m for m in messages if m[0] == "retrans_result"]
         assert len(results) == 1
         assert results[0][3] == "retranslated"
+
+    def test_retranslation_result_is_annotated_once(self):
+        ui_q = queue.Queue()
+        h = self._make_history()
+        worker = RetranslationWorker(
+            ui_queue=ui_q, history=h, workers=[],
+            llm_backend="gemini", model="gemini-2.0-flash", api_key="key",
+            min_interval_sec=0,
+            client_factory=lambda: MagicMock(),
+        )
+        req = type("Req", (), {"center_seq": 1, "n_surrounding": 1, "context": "ctx", "batch_id": "batch"})()
+
+        with patch.object(worker, "_call_gemini", return_value="35 psi") as call_gemini, \
+             patch("realtime_translator.retranslation.annotate_translation", return_value="annotated") as annotate:
+            result = worker._execute_retranslation(req, MagicMock())
+
+        assert result == "annotated"
+        call_gemini.assert_called_once()
+        annotate.assert_called_once_with("35 psi", output_language="ja")
+
+    def test_retranslation_annotation_failure_falls_back_to_raw(self):
+        ui_q = queue.Queue()
+        h = self._make_history()
+        worker = RetranslationWorker(
+            ui_queue=ui_q, history=h, workers=[],
+            llm_backend="gemini", model="gemini-2.0-flash", api_key="key",
+            min_interval_sec=0,
+            client_factory=lambda: MagicMock(),
+        )
+        req = type("Req", (), {"center_seq": 1, "n_surrounding": 1, "context": "ctx", "batch_id": "batch"})()
+
+        with patch.object(worker, "_call_gemini", return_value="35 psi"), \
+             patch("realtime_translator.retranslation.annotate_translation", side_effect=RuntimeError("boom")):
+            result = worker._execute_retranslation(req, MagicMock())
+
+        assert result == "35 psi"
+
+    def test_retranslation_auto_stream_resolves_output_language_from_source_default(self):
+        ui_q = queue.Queue()
+        h = TranslationHistory()
+        h.append(
+            "listen",
+            "12:00:00",
+            "Hello",
+            "こんにちは",
+            virtual_stream_id="listen_auto",
+            resolved_direction=None,
+        )
+        worker = RetranslationWorker(
+            ui_queue=ui_q, history=h, workers=[],
+            llm_backend="gemini", model="gemini-2.0-flash", api_key="key",
+            min_interval_sec=0,
+            client_factory=lambda: MagicMock(),
+        )
+        req = type("Req", (), {"center_seq": 1, "n_surrounding": 0, "context": "ctx", "batch_id": "batch"})()
+
+        with patch.object(worker, "_call_gemini", return_value="12 mm"), \
+             patch("realtime_translator.retranslation.annotate_translation", return_value="annotated") as annotate:
+            result = worker._execute_retranslation(req, MagicMock())
+
+        assert result == "annotated"
+        annotate.assert_called_once_with("12 mm", output_language="ja")
 
     def test_missing_entry_error(self):
         ui_q = queue.Queue()
