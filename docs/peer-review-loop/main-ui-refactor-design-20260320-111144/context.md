@@ -1,0 +1,12 @@
+# Review Context
+- Host agent: Codex
+- Reviewer CLI: Claude CLI
+- Mode: file
+- Target: `docs/superpowers/specs/2026-03-20-main-ui-refactor-design.md`
+- Goal: 設計書が実装計画に進める状態かを確認し、重大指摘があれば反映して再レビューする
+- Constraints:
+  - 日本語でレビュー
+  - Findings 優先
+  - 重大指摘がなければ `重大指摘なし`
+  - 対象は UI リファクタ設計書 1 ファイル
+- Stop rule: no high findings or max 3 rounds

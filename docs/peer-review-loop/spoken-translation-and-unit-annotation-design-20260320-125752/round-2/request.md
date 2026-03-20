@@ -1,3 +1,50 @@
+以下を日本語でレビューしてください。
+
+観点:
+- 仕様の抜け
+- バグや回帰リスク
+- テスト不足
+- 過剰設計
+- 完了条件の不備
+
+出力形式:
+1. Findings を重要度順に列挙
+2. 重大指摘がなければ「重大指摘なし」と明記
+3. 最後に3行以内で総評
+4. 現在の対象本文を正本として判断し、過去レビューの古い指摘はそのまま繰り返さない
+
+前回レビュー全文:
+サイズ都合で要約します。前回の主要指摘は次でした。
+- [高] 後処理の統合ポイントが曖昧で、通常翻訳・2フェーズ翻訳・再翻訳の呼び出し位置が不明
+- [高] 完了条件がなく、何をもって実装完了とするか不明
+- [高] 英語出力で裸数字の読み付与範囲が広すぎ、型番・日付・バージョン番号との境界が不明
+- [中] `Ra` 補足の有益性と他粗さ指標の扱いが曖昧
+- [中] `JIS # / FEPA P / US Mesh / micron` の離散テーブルが仕様化されていない
+- [中] LLM 非決定性を踏まえた回帰確認方法が曖昧
+
+前回の重大指摘要約:
+- [High] 後処理の統合ポイントをファイル名・関数名レベルで固定する必要がある
+- [High] Done Criteria を追加する必要がある
+- [High] 英語裸数字読みの除外対象を明記する必要がある
+
+今回すでに反映した修正:
+- `realtime_translator/translation_postprocess.py` と `realtime_translator/unit_tables.py` を spec 上の追加対象に固定
+- `TranslatorApp._poll_queue()` の `translation_done` 分岐、および `RetranslationWorker._execute_retranslation()` を後処理の統合ポイントとして明記
+- `ApiWorker._call_api()` と `OpenAiLlmWorker._handle_phase0_2()` は raw translation の emit のみに限定すると明記
+- `Done Criteria` を追加し、適用経路と test suite 通過を完了条件に固定
+- 英語数字読みの除外対象と判定原則を追加
+- 離散変換テーブルの保存場所と `mesh` / `JIS #` / `FEPA P` の扱いを追加
+- `Ra` は v1 で `um` 補足のみ、他粗さ指標は対象外と明記
+- 回帰確認方法を deterministic test 中心で追加
+
+注意:
+- 現在の対象本文が正本です
+- 過去レビューにある古い断片より、現在の対象本文を優先してください
+- 高重要度の指摘が1件でも残るなら「重大指摘なし」とは書かないでください
+
+対象:
+
+```markdown
 # Spoken Translation and Unit Annotation Design
 
 Date: 2026-03-20
@@ -87,12 +134,6 @@ Status: Draft approved by user for implementation planning
 - 変換不能または曖昧なら無理に補足しない
 - 丸めは会話中の実務利用を優先する
 
-単位ごとの注釈原則:
-
-- 長さ、重量、温度、トルクは既定で 1 換算先だけを出す
-- 圧力は実務会話で `MPa` と `bar` の両方が使われやすいため、原単位が `psi` のときだけ `MPa / bar` を併記してよい
-- 原単位が `MPa` または `bar` のときは、既定で 1 換算先だけを出す
-
 ## Supported Conversion Domains
 
 ### Engineering Units
@@ -156,18 +197,12 @@ Status: Draft approved by user for implementation planning
 
 新しい後処理モジュール `realtime_translator/translation_postprocess.py` を追加し、翻訳済みテキストに対して deterministic な補足を付ける。
 
-v1 の公開 API は次の 1 点に絞る。
+最低限の公開 API は次とする。
 
-- `annotate_translation(text: str, *, output_language: str) -> str`
-
-内部 helper は実装詳細として扱い、spec の公開契約には含めない。
-
-`AnnotationResult` を導入する場合は内部型とし、少なくとも次の情報を保持する。
-
-- `rendered_text`
-- `category`
-- `source_token`
-- `confidence`
+- `annotate_translation(text: str, *, output_language: str, direction: str | None, source_stream_id: str, virtual_stream_id: str | None) -> str`
+- `build_number_reading(token: str, output_language: str) -> str | None`
+- `convert_engineering_token(token: str) -> AnnotationResult | None`
+- `convert_abrasive_token(token: str) -> AnnotationResult | None`
 
 責務:
 
@@ -185,21 +220,12 @@ v1 の公開 API は次の 1 点に絞る。
 
 - 通常翻訳と 2 フェーズ翻訳の両方では、`realtime_translator/app.py` の `TranslatorApp._poll_queue()` 内 `translation_done` 分岐で、`TranslationHistory.append()` の直前に `annotate_translation(...)` を 1 回だけ適用する
 - `translation_done` を発火する upstream は現行どおり `realtime_translator/api.py` の `ApiWorker._call_api()` と `realtime_translator/openai_llm.py` の `OpenAiLlmWorker._handle_phase0_2()` とし、ここでは後処理を入れず raw translation を UI キューへ流す
-- 2 フェーズ翻訳の Phase 1 は `transcript` イベントだけを発火し、後処理対象にしない。後処理対象は final translation を表す `translation_done` だけとする
 - 再翻訳では `realtime_translator/retranslation.py` の `RetranslationWorker._execute_retranslation()` の LLM 応答直後に `annotate_translation(...)` を適用してから `retrans_result` を返す
-- 返答アシストと議事録生成には本後処理を適用しない。これらは `assist_result` / `assist_error` 系イベントだけを使い、`translation_done` を発火しない前提を契約として固定する
+- 返答アシストと議事録生成には本後処理を適用しない
 - 元の方向判定や履歴格納契約を壊さない
-- 同一テキストへ二重適用しない。v1 では `annotate_translation(...)` を raw LLM 出力専用 API と位置付け、履歴再描画やタブ再表示では再実行しない
+- 同一テキストへ二重適用しない
 
 `translation_done` 系経路は `app.py` 側、`retrans_result` 経路は `retranslation.py` 側に固定することで、Gemini / OpenAI / OpenRouter の backend 差分による適用漏れを防ぐ。
-
-二重適用防止の契約:
-
-- `annotate_translation(...)` は冪等性を保証対象にしない
-- 呼び出し側契約で「raw translation を受けた直後の 1 回だけ実行する」ことを保証する
-- `TranslationHistory` と workspace タブは、注釈済みテキストを保存・表示するだけで再注釈しない
-- integration test で `translation_done` と `retrans_result` の両経路について call count が 1 回であることを確認する
-- integration test で `assist_result` と `minutes` 系経路では call count が 0 回であることを確認する
 
 ## Number Reading Policy for English
 
@@ -243,13 +269,6 @@ v1 の公開 API は次の 1 点に絞る。
 要件:
 
 - `realtime_translator/unit_tables.py` を追加し、`JIS # / FEPA P / US Mesh / micron` の対応表を定数として保持する
-- 工学単位の換算係数は固定計算式で実装し、係数はコードコメントまたは module docstring に明記する
-  - `mm <-> in`: `25.4`
-  - `kg <-> lb`: `2.20462`
-  - `Nm <-> lbf·ft`: `0.737562`
-  - `MPa <-> psi`: `145.037738`
-  - `bar <-> psi`: `14.5037738`
-  - 温度は `C * 9 / 5 + 32` と逆変換を使う
 - `mesh` は `US Mesh / ASTM E11` 基準の代表値テーブルを採用する
 - `JIS #` と `FEPA P` は近似対応であることをテーブルコメントに明記する
 - `micron / um` から `JIS #` と `FEPA P` への逆引きは、完全一致または定義済み近傍値へのみ許可する
@@ -264,7 +283,7 @@ v1 の公開 API は次の 1 点に絞る。
 初期方針:
 
 - 長さ: 小数 2 桁まで
-- 温度: 既定で小数 1 桁まで
+- 温度: 小数 1 桁から 2 桁
 - 圧力: 小数 2 桁まで
 - トルク: 小数 2 桁まで
 - 粗さ: 既存値維持、必要時のみ適度に丸める
@@ -275,9 +294,6 @@ v1 の公開 API は次の 1 点に絞る。
 - `Ra` は v1 では `um` 補足までを対象とし、inch 系粗さ換算は行わない
 - `Ra 0.8` の補足は `Ra 0.8 um` のような単位明示を目的とし、別指標への変換ではない
 - `Rz`, `Ry`, `Rmax` など他の粗さ指標は v1 の対象外とする
-- 公差値では情報欠落を避けるため、通常の丸め上限より細かい桁を許容する
-  - 例: `±0.01 mm` -> `±0.0004 in`
-  - `0.00 in` のように意味を失う丸めは許可しない
 
 ## Failure Behavior
 
@@ -288,12 +304,6 @@ v1 の公開 API は次の 1 点に絞る。
 - 補足生成に失敗したら原翻訳をそのまま返す
 - 数値部分だけの部分失敗なら、成功した対象だけ補足する
 - 例外を UI 全体エラーへ昇格させない
-
-部分失敗の定義:
-
-- token 単位の解析失敗
-- 曖昧判定により注釈を見送った場合
-- 個別 token の換算や読み生成だけが失敗し、本文文字列自体は保持できる場合
 
 ## Test Strategy
 
@@ -308,16 +318,12 @@ v1 の公開 API は次の 1 点に絞る。
 - 離散テーブルの代表値が固定され、意図しない変更で落ちる
 - 英語数字読みで識別子、日付、バージョン番号を誤注釈しない
 - 話し言葉化で丁寧さが崩れすぎないことを prompt テスト観点に含める
-- 範囲表現と公差表現で符号と両端値を保持したまま換算できる
-- 精密公差で丸めによって `0.00` などの情報欠落が起きない
-- 返答アシストと議事録経路では後処理が走らない
-- 同一 translation に後処理が 2 回適用されない
 
 回帰確認方法:
 
 - prompt 変更は文字列レベルの unit test で検証し、`spoken` 指示と `数値を崩さない` 指示の同居を固定する
 - 後処理は pure function の unit test で検証し、LLM の非決定性に依存しない
-- 統合テストは LLM 呼び出しを mock し、`translation_done` と `retrans_result` の各経路で注釈が 1 回だけ適用されること、`assist_result` と議事録経路では 0 回であることを確認する
+- 統合テストは LLM 呼び出しを mock し、`translation_done` と `retrans_result` の各経路で注釈が 1 回だけ適用されることを確認する
 - 人手の翻訳品質確認が必要な場合でも、done 判定は deterministic test の通過を先に満たす
 
 ## Done Criteria
@@ -328,10 +334,7 @@ v1 の公開 API は次の 1 点に絞る。
 - `realtime_translator/translation_postprocess.py` と `realtime_translator/unit_tables.py` が追加され、変換テーブルがコードベースに保存されている
 - `TranslatorApp._poll_queue()` の `translation_done` 分岐で注釈後テキストが `TranslationHistory` へ保存される
 - `RetranslationWorker._execute_retranslation()` で再翻訳結果にも同じ注釈が 1 回だけ適用される
-- `assist_result` と議事録結果には後処理が適用されない
-- 2 フェーズ翻訳の Phase 1 `transcript` には後処理が適用されない
 - 既存の返答アシスト、議事録、方向判定、自動方向モードが退行していない
-- 丸めポリシーと換算係数の挙動が unit test で固定されている
 - 関連 unit test / integration test が追加され、既存 test suite が通過する
 
 ## Risks
@@ -350,3 +353,4 @@ v1 の公開 API は次の 1 点に絞る。
 3. 通常翻訳、2フェーズ翻訳、再翻訳へ共通適用する
 4. 単体テストで変換表と曖昧ケースを固定する
 5. 統合テストで既存の翻訳フローを壊していないことを確認する
+```

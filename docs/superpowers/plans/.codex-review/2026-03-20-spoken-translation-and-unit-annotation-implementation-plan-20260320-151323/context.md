@@ -1,0 +1,25 @@
+## Review Context
+- Plan type: 実装計画書
+- Repo rules:
+  - 回答は日本語
+  - ローカルパスは Windows 通常表記
+  - このレビューでは計画書だけを更新対象にする
+  - `AGENTS.md` on disk: NOT_FOUND
+- Stack:
+  - `pyproject.toml`
+  - Python 3.13
+  - tkinter/ttk
+  - pytest / unittest.mock
+- Relevant recent changes:
+  - `5707aa9 docs: add spoken translation and unit annotation spec`
+  - `78482b9 refactor: rebuild main window into three regions`
+  - `94f43a0 fix: worker queue race conditions, counter drift, and UI show_original bug`
+  - 既存 UI リファクタ済みで `app.py`, `workspace_panel.py`, `translation_timeline_panel.py`, `main_controls_panel.py` が存在する
+- Test signals:
+  - `tests/` 配下に prompt, integration, retranslation, history, UI 関連テストが揃っている
+  - `.pytest_cache`: 存在
+- Key constraints:
+  - 話し言葉化は翻訳 prompt の責務、数値注釈は deterministic 後処理の責務
+  - 後処理は final translation と retranslation にだけ 1 回適用する
+  - `transcript`, assist, minutes は後処理対象外
+  - 実装計画は TDD 前提で小さな独立タスクに分ける

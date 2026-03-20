@@ -1,3 +1,29 @@
+以下を日本語でレビューしてください。
+
+観点:
+- 仕様の抜け
+- バグや回帰リスク
+- テスト不足
+- 過剰設計
+- 完了条件の不備
+
+出力形式:
+1. Findings を重要度順に列挙
+2. 重大指摘がなければ「重大指摘なし」と明記
+3. 最後に3行以内で総評
+
+前回レビュー全文:
+なし
+
+前回の重大指摘要約:
+なし
+
+今回すでに反映した修正:
+初回
+
+対象:
+
+```markdown
 # Realtime Translator メイン UI リファクタ設計
 
 作成日: 2026-03-20
@@ -255,26 +281,6 @@ partial 表示と確定表示の責務は現行と同様に保つが、主画面
 - `TranslatorApp` -> 左カラム要約更新
 - `TranslatorController` -> 中央タイムライン / 右タブ更新
 
-設定変更の即時反映は `trace` コールバックを第一手段とし、`settings_window` 上で編集している `tk.*Var` の更新に追従して左カラム要約を更新する。`Text` 系のように `trace` を持たない入力は、設定ウィンドウ側で明示コールバックを発火する。設定ウィンドウ close 時の一括同期だけには依存しない。
-
-### パネル間更新 API
-
-画面分割前に、`TranslatorApp` と各パネルの間に最小 API を定義する。少なくとも以下を持つ。
-
-- `main_controls_panel.apply_session_summary(...)`
-- `main_controls_panel.set_blocker(message | None)`
-- `translation_timeline_panel.set_global_status(status_kind, message)`
-- `translation_timeline_panel.on_partial_start(...)`
-- `translation_timeline_panel.on_partial(...)`
-- `translation_timeline_panel.on_translation_done(...)`
-- `translation_timeline_panel.on_runtime_error(...)`
-- `workspace_panel.on_history_entry(...)`
-- `workspace_panel.on_retranslation_result(...)`
-- `workspace_panel.on_assist_result(...)`
-- `workspace_panel.on_local_error(tool_name, message)`
-
-導入順序は、レイアウト差し替え前に `app.py` から各パネル API を呼ぶ形へ寄せることを優先する。移行期間中に `tk.*Var` の直接参照と新 API 呼び出しを混在させるのは `TranslatorApp` 内部に限定し、各パネル間で二重の状態源を持たせない。
-
 ### 実行イベント
 
 キュー処理のハブは `TranslatorApp._poll_queue()` を維持する。ただし、画面反映の責務は各パネルへ委譲する。
@@ -287,27 +293,6 @@ partial 表示と確定表示の責務は現行と同様に保つが、主画面
 - `retrans_result` -> `workspace_panel`
 - `assist_result` -> `workspace_panel`
 - `status` -> 状態バー更新
-
-### エラーイベント契約
-
-`_poll_queue()` が受け取る `error` 系イベントは、UI 分岐に必要な分類情報を持つ前提で扱う。少なくとも次を満たす。
-
-- `scope`: `session` | `tool`
-- `severity`: `blocker` | `runtime`
-- `source`: `startup` | `translation` | `retranslation` | `assist` | `minutes` | `settings`
-- `message`: ユーザー表示文言
-
-UI 反映ルール:
-
-- `scope=session` かつ `severity=blocker` は左カラムの開始前ブロッカーへ送る
-- `scope=session` かつ `severity=runtime` は中央タイムラインとグローバル状態バー候補へ送る
-- `scope=tool` は右タブ内だけで処理し、グローバル状態バーには昇格させない
-
-既存の単純な `error` イベントを残す場合でも、`TranslatorApp` 内で上記形式へ正規化してから各パネルへ渡す。
-
-### 状態バー優先順位解決
-
-状態バーの優先順位解決ロジックは `TranslatorApp` 側に単一の状態リゾルバとして持たせる。`translation_timeline_panel` は表示専任とし、優先順位判断は持たない。複数状態が同時に立つ場合は、常に `TranslatorApp` の状態リゾルバが `エラー > PTT録音中 > 翻訳中 > 初期化中 > 待機中` の順で 1 つに畳み込んでから `translation_timeline_panel.set_global_status(...)` へ流す。
 
 ## 実装方針
 
@@ -351,20 +336,12 @@ UI 反映ルール:
 - `再翻訳 / 返答アシスト / 議事録` がタブ切替後も従来どおり動くこと
 - タブ内処理中表示が正しく出ること
 - タブ内エラーが他タブや主状態バーを壊さないこと
-- 別タブ表示中に翻訳イベントや履歴更新が届いても、アクティブタブやスクロール位置が不正化しないこと
 
 ### レイアウト確認
 
 - 1100px 幅前後で中央タイムラインの視認性が改善していること
 - 最小サイズ付近でも主要操作が隠れないこと
 - 右タブ領域が狭すぎず、結果表示も確保できること
-
-### 優先順位と境界条件確認
-
-- `session blocker + tool local error` が同時発生しても、左カラムと右タブで正しく分離表示されること
-- 実行時エラーと `PTT録音中` が競合した場合、状態バー優先順位が崩れないこと
-- PTT のキーボード操作が既存どおり機能すること
-- Notebook のキーボード操作が実用上破綻していないこと
 
 ## 影響範囲
 
@@ -375,45 +352,12 @@ UI 反映ルール:
 
 ## 段階的実装案
 
-1. パネル間更新 API と状態リゾルバを先に導入する
-2. 右側ワークスペースを Notebook 化する
-3. 中央タイムライン領域を独立パネル化する
-4. 左カラムを追加し、既存上部トグル群を置き換える
-5. 状態バーを中央上部へ移し、開始前エラー表示を CTA 近傍へ移す
-6. `app.py` の UI 責務を縮小し、旧 widget 参照を整理する
-
-## ステップごとの検証ゲート
-
-### Step 1
-
-- `TranslatorApp` から新 API 経由で既存 UI が更新できること
-- 状態バー優先順位リゾルバが単体確認できること
-
-### Step 2
-
-- 再翻訳 / 返答アシスト / 議事録がタブ切替後も従来どおり動くこと
-- タブ切替中に翻訳イベントが届いても、タブ状態が壊れず結果反映できること
-
-### Step 3
-
-- partial / translation_done / runtime error が中央パネル単体へ反映されること
-- 既存の自動スクロールと履歴連携が維持されること
-
-### Step 4
-
-- 左カラムで開始/停止、有効ストリーム、方向サマリー、モード要約が表示されること
-- 設定変更が即時に左カラム要約へ反映されること
-
-### Step 5
-
-- グローバル状態バーが優先順位どおり 1 本化されること
-- 開始前ブロッカーが CTA 近傍へ表示されること
-- `session blocker + tool local error` のような複合ケースでも誤表示しないこと
-
-### Step 6
-
-- 旧 UI 参照が整理され、`app.py` が配線ハブに縮退していること
-- 最終レイアウトと既存機能が完了条件を満たすこと
+1. 右側ワークスペースを Notebook 化する
+2. 中央タイムライン領域を独立パネル化する
+3. 左カラムを追加し、既存上部トグル群を置き換える
+4. 状態バーを中央上部へ移し、優先順位ロジックを整理する
+5. 開始前エラー表示を CTA 近傍へ移す
+6. パネル間更新 API を整理し、`app.py` の UI 責務を縮小する
 
 ## 完了条件
 
@@ -423,10 +367,7 @@ UI 反映ルール:
 - `開始/停止・有効ストリーム・方向サマリー・状態表示` が主画面に残っている
 - `PTT / VAD / 2フェーズ / 原文表示` は主画面では要約表示になっている
 - グローバル状態バーの優先順位が `エラー > PTT録音中 > 翻訳中 > 初期化中 > 待機中` で統一されている
-- `error` 系イベントの分類契約と、各パネル更新 API の責務が spec 上で定義されている
-- 段階的実装の各ステップに対応する検証ゲートが定義されている
 - 既存の翻訳、再翻訳、返答アシスト、議事録機能が退行していない
-- 未解決事項 3 点が実装着手前に確定され、その結果が実装計画へ反映されている
 
 ## リスク
 
@@ -441,3 +382,4 @@ UI 反映ルール:
 - 最小ウィンドウ幅時の右タブ領域の下限サイズ
 
 これら 3 点は実装計画の早い段階で確定対象に含める。実装着手前に UI ラフまたはレイアウト定数として固定し、タスク分解と見積もりの揺れを抑える。
+```

@@ -1,0 +1,12 @@
+# Review Context
+- Host agent: Codex
+- Reviewer CLI: Claude CLI
+- Mode: file
+- Target: `docs/superpowers/specs/2026-03-20-spoken-translation-and-unit-annotation-design.md`
+- Goal: 翻訳品質と数値注釈の設計書が実装計画に進める状態かを確認し、重大指摘があれば反映して再レビューする
+- Constraints:
+  - 日本語でレビュー
+  - Findings 優先
+  - 重大指摘がなければ `重大指摘なし`
+  - 対象は翻訳品質と数値注釈の設計書 1 ファイル
+- Stop rule: no high findings or max 3 rounds

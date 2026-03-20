@@ -1,0 +1,19 @@
+# Peer Review Loop Summary
+- Host agent: Codex
+- Reviewer CLI: Claude CLI
+- Target: C:\Users\tenx5\OneDrive - Extrude Hone GmbH\ドキュメント\cursordoc\100 - プロジェクト管理\active\realtime-translator\docs\superpowers\specs\2026-03-20-bidirectional-stream-modes-design.md
+- Rounds: 3
+- Stop reason: 重大指摘なし
+- Applied fixes:
+  - `auto` の速度優先方針を反映し、`DIRECTION` 先頭行確定後に `TRANSLATION` を逐次表示する設計へ更新
+  - `direction_parse_failed` 時の不完全履歴、再翻訳禁止、UI エラー表示を明記
+  - streaming パーサ仕様、trim・改行許容、`ORIGINAL` 非表示、`TRANSLATION` 遷移条件を具体化
+  - 外部STT の言語情報優先利用と、言語情報欠落時の LLM 判定フォールバックを追加
+  - 旧履歴の `resolved_direction` 補完、`StartConfig` 既定値、設定書き込みパス棚卸し、固定方向出力仕様を追記
+  - UI 制約、PTT 説明、統合テスト、段階的実装順序を補強
+- Verification:
+  - Claude CLI による反対側レビューを 3 ラウンド実施
+  - 各ラウンドの request / review / high-findings を保存
+  - 設計書を都度更新し、再レビューを実施
+- Remaining high findings:
+  - なし

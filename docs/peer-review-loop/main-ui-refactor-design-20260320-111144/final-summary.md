@@ -1,0 +1,24 @@
+# Peer Review Loop Summary
+
+- Host agent: Codex
+- Reviewer CLI: Claude CLI
+- Target: `docs/superpowers/specs/2026-03-20-main-ui-refactor-design.md`
+- Rounds: 2
+- Stop reason: 重大指摘なし
+- Applied fixes:
+  - `error` 系イベントの分類契約を追加
+  - パネル間更新 API の最小一覧と導入順序を追加
+  - 状態バー優先順位ロジックの実装所在を `TranslatorApp` に固定
+  - 設定変更から左カラム要約への即時反映方式を追加
+  - 段階的実装の検証ゲートを追加
+  - 境界条件とキーボード操作の確認項目を追加
+  - 未解決事項 3 点を完了条件側にも反映
+- Verification:
+  - Round 1 後に spec 差分を確認
+  - Round 2 で Claude CLI に差分ベース再レビューを実施
+- Remaining high findings:
+  - なし
+- Remaining medium findings:
+  - API シグネチャ詳細
+  - 既存 `error` イベントの正規化マッピング
+  - Step 1 の検証対象の具体化

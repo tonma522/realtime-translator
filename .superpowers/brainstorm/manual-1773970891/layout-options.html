@@ -1,0 +1,100 @@
+<h2>Realtime Translator 画面構成の比較案</h2>
+<p class="subtitle">現状の課題は、主操作と設定が分断されていること、下部ツールが常時大きく場所を取り文脈優先度が弱いこと、状態確認の視線移動が多いことです。</p>
+
+<div class="section">
+  <div class="pros-cons">
+    <div class="cons">
+      <h4>現状で気になる点</h4>
+      <ul>
+        <li>開始前に見るべき項目が「上部トグル」と「設定ウィンドウ」に分断</li>
+        <li>「翻訳開始」が一次操作なのに、補助操作と同列で埋もれやすい</li>
+        <li>再翻訳・返答アシスト・議事録が常時 3 分割で、待機時はノイズになりやすい</li>
+        <li>PC音声とマイクの状態差分が一覧で掴みにくい</li>
+      </ul>
+    </div>
+    <div class="pros">
+      <h4>今回のリファクタ方針</h4>
+      <ul>
+        <li>主画面は「今すぐ翻訳を回す」ための判断に限定</li>
+        <li>頻度の低い詳細設定は二次面へ退避</li>
+        <li>履歴・補助ツールは必要時に開く構成へ整理</li>
+        <li>二方向翻訳を stream 単位で把握しやすくする</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A. Focused Console</div>
+        <div class="mockup-body">
+          <div class="label">左</div>
+          <div class="mock-sidebar" style="margin-bottom:12px;">セッション設定<br>デバイス / モード / 言語方向<br>開始前チェック</div>
+          <div class="label">中央</div>
+          <div class="mock-content" style="min-height:170px; margin-bottom:12px;">翻訳タイムライン<br>PC音声 / マイクの混在結果を一列で表示<br>状態バーと最新イベントを上部固定</div>
+          <div class="label">右</div>
+          <div class="mock-sidebar">履歴 / 再翻訳 / 議事録をタブ切替</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>運用重視の標準案</h3>
+      <p>毎回使う設定を左にまとめ、翻訳結果を中央に最大化する構成。補助機能は右サイドに集約して、主作業を邪魔しません。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B. Setup-first Wizard</div>
+        <div class="mockup-body">
+          <div class="mock-nav">Step 1 準備 → Step 2 接続確認 → Step 3 翻訳</div>
+          <div class="placeholder" style="margin:12px 0;">準備カード群<br>API / デバイス / モードの不備を赤で事前検知</div>
+          <div class="mock-content" style="min-height:150px;">開始後は結果画面に切り替え<br>下部から履歴と補助ツールを引き出す</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>初回導入に強い案</h3>
+      <p>設定漏れや起動失敗を減らす代わりに、画面遷移が増えます。新規ユーザーやセットアップ支援を強く意識する場合に向きます。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C. Dual Stream Studio</div>
+        <div class="mockup-body">
+          <div class="split">
+            <div class="mockup">
+              <div class="mockup-header">PC音声</div>
+              <div class="mockup-body">
+                <div class="mock-sidebar">入力状態 / 閾値</div>
+                <div class="mock-content">原文 / 訳文</div>
+              </div>
+            </div>
+            <div class="mockup">
+              <div class="mockup-header">マイク</div>
+              <div class="mockup-body">
+                <div class="mock-sidebar">PTT / VAD / モード</div>
+                <div class="mock-content">原文 / 訳文</div>
+              </div>
+            </div>
+          </div>
+          <div class="mock-nav" style="margin-top:12px;">下部ドロワー: 履歴 / 再翻訳 / 返答アシスト / 議事録</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>二方向の可視性を最優先する案</h3>
+      <p>PC音声とマイクを完全に分けて管理でき、上級者には強いです。ただし幅を使うので、ノート PC ではやや窮屈になります。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>私の現時点の推奨</h3>
+  <p><strong>A. Focused Console</strong> が一番バランスが良いです。今のアプリは「常用の翻訳コンソール」で、セットアップウィザードよりも、開始前判断と実行中の監視を同じ面で完結させる方が合っています。</p>
+</div>

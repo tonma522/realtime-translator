@@ -1,0 +1,21 @@
+# Peer Review Loop Summary
+- Host agent: Codex
+- Reviewer CLI: Claude CLI
+- Target: C:\Users\tenx5\OneDrive - Extrude Hone GmbH\ドキュメント\cursordoc\100 - プロジェクト管理\active\realtime-translator\docs\superpowers\specs\2026-03-20-bidirectional-stream-modes-design.md
+- Rounds: 3
+- Stop reason: 最大3回到達
+- Applied fixes:
+  - `auto` 用応答フォーマットを `DIRECTION` / `ORIGINAL` / `TRANSLATION` に固定
+  - 旧履歴互換フォールバックを明記
+  - PTT の `speak_*` マッピングを明記
+  - 実行中設定変更は次回開始時反映と明記
+  - Whisper / 外部STT 併用時の 2 フェーズ無効化を明記
+  - `resolved_direction` を履歴に保持し、`auto` 再翻訳で再利用する方針を追加
+  - `auto` の STT 言語パラメータ未指定、`DIRECTION` パース失敗時のエラー処理、streaming 確定タイミングを明記
+  - 完了条件、品質検証、UI 通知テスト項目を補強
+- Verification:
+  - Claude CLI による反対側レビューを 3 ラウンド実施
+  - 各ラウンドの request / review / high-findings を保存
+  - 設計書差分を都度確認
+- Remaining high findings:
+  - streaming auto モードで翻訳テキストを全文受信後に一括表示するのか、方向確定後に遅延 streaming 表示するのかが未定義

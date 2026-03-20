@@ -1,0 +1,30 @@
+# Peer Review Loop Summary
+
+- Host agent: Codex
+- Reviewer CLI: Claude CLI
+- Target: `docs/superpowers/specs/2026-03-20-spoken-translation-and-unit-annotation-design.md`
+- Rounds: 3
+- Stop reason: 最大3回到達
+- Applied fixes:
+  - 後処理の統合ポイントを `app.py`, `api.py`, `openai_llm.py`, `retranslation.py` の関数名レベルで固定
+  - `Done Criteria` を追加し、適用経路と test suite 通過を完了条件に追加
+  - 英語数字読みの除外対象と判定原則を追加
+  - `realtime_translator/translation_postprocess.py` と `realtime_translator/unit_tables.py` を spec 上の追加対象に固定
+  - `JIS # / FEPA P / US Mesh / micron` の離散テーブル要件を追加
+  - `Ra` は v1 で `um` 補足のみ、他粗さ指標は対象外と明記
+  - `annotate_translation(...)` を raw translation 専用の最小公開 API に絞り、内部 helper を契約外に整理
+  - `assist_result` / 議事録系は後処理対象外で、`translation_done` を発火しない契約を追加
+  - 二重適用防止を呼び出し側契約と integration test の call count で固定
+  - 範囲表現、公差表現、除外経路、二重適用禁止を test strategy に追加
+- Verification:
+  - Round 1 後に spec 差分と関連コード (`realtime_translator/app.py`, `realtime_translator/api.py`, `realtime_translator/openai_llm.py`, `realtime_translator/retranslation.py`, `realtime_translator/prompts.py`) を照合
+  - Round 2 後に spec 差分を確認し、公開 API と統合契約の整合を自己点検
+  - Round 3 は Claude CLI の再レビュー結果を確認し、残高重要度がコード実態と整合するかを追加評価
+- Remaining high findings:
+  - 2フェーズ翻訳の中間結果への後処理適用方針を spec でさらに明文化すべき、という指摘が 1 件残った
+  - ただし現行コード上は Phase 1 が `transcript`、後処理対象の `translation_done` は最終翻訳結果側であり、誤読起因の可能性が高い
+- Remaining medium findings:
+  - 圧力だけ `MPa / bar` を併記する条件
+  - 温度丸めの 1 桁 / 2 桁の選択基準
+  - 工学単位の換算係数の源泉
+  - 精密公差と丸めポリシーの整合テスト

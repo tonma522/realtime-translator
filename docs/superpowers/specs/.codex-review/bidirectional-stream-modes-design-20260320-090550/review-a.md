@@ -1,0 +1,5 @@
+[High] `auto` の共通プロトコルが速度優先要件と矛盾しています。`DIRECTION` の後に `ORIGINAL` を全文1行で出してから `TRANSLATION` に入る仕様だと、訳文 streaming 開始が原文長ぶん必ず遅れ、固定方向に近い体感速度を維持できません。  
+[High] 外部STT/Whisper が言語情報を返す経路では `resolved_direction` を STT 側で確定すると書く一方で、`auto` は常に LLM から `DIRECTION / ORIGINAL / TRANSLATION` を返させ同一パーサで処理するとしており、`DIRECTION` の生成主体が STT なのか LLM なのか未定義です。このままでは「LLM に再判定させない」と「全経路で同一プロトコル」を両立できません。  
+[Medium] `2フェーズ` 節で「`auto` モードで Whisper / 外部STT を使う場合」の挙動を規定している一方、後段では `Whisper/OpenAI STT/OpenRouter STT + 2フェーズ` を未定義として無効化するとしており、通常モード / 2フェーズ / 外部STT の経路整理が自己矛盾しています。  
+[Medium] 通常モード自動方向の説明では「原文と訳文、または訳文のみを返す」とありますが、プロンプト設計では `show_original` に関係なく `auto` は常に `ORIGINAL:` 行必須です。返却契約が2通りに見えるため、パーサ仕様が固定されていません。  
+[Medium] パーサ仕様は `TRANSLATION:` を検出したら流すとだけあり、`ORIGINAL:` 行欠落時の扱い、`TRANSLATION:` が行頭以外に出た場合の扱い、`TRANSLATION:` 直後の改行可否が未規定です。chunk 境界をまたぐ streaming 実装で経路ごとの解釈差が出ます。

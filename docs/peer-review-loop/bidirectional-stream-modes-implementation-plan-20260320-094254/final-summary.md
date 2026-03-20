@@ -1,0 +1,19 @@
+# Peer Review Loop Summary
+- Host agent: Codex
+- Reviewer CLI: Claude CLI
+- Target: C:\Users\tenx5\OneDrive - Extrude Hone GmbH\ドキュメント\cursordoc\100 - プロジェクト管理\active\realtime-translator\docs\superpowers\plans\2026-03-20-bidirectional-stream-modes-implementation-plan.md
+- Rounds: 3
+- Stop reason: 重大指摘なし
+- Applied fixes:
+  - unknown stream_id の明示的 ValueError と失敗テストを追加
+  - direction_parse_failed の既定動作と UI 振る舞いを明記
+  - Task 4 の ApiRequest / translation_done / STT metadata スニペットを追加
+  - usable_for_downstream を安全側デフォルトに変更
+  - DirectionHeaderParser の本体、DirectionHeaderEvent、STT言語エッジケースを追加
+  - build_history_for_assist と format_stream_header の定義先・スニペットを追加
+  - test_tools_panel.py の最低 3 ケースを並列 TODO に明記
+- Verification:
+  - 計画書内の主要キーワードと追加スニペットが存在することを確認
+  - Claude CLI による 3 ラウンドレビューを完了
+- Remaining high findings:
+  - なし

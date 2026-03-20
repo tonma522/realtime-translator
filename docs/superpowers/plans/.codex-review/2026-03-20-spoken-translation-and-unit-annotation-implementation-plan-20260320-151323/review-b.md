@@ -1,0 +1,4 @@
+[High] Task 2/3/4（計画 153-165, 203-223, 265-279）は `annotate_translation()` の純粋関数内フォールバックしか見ておらず、統合点で例外が漏れた場合の raw translation 維持策が抜けています。現行の `app._poll_queue()` はその場で履歴追加を落とし、`RetranslationWorker` は `retrans_error` に流れるため、spec の「翻訳本文は捨てない」（spec 286-290）を満たせないまま壊れます。  
+[High] Task 3 の統合テスト（計画 181-223）が 5 要素の `translation_done` 例しか持たず、現行 `app.py` にある 8 要素イベントと auto 方向解決の経路を固定できていません。`output_language` を `resolved_direction` から決める検証を入れないと、自動方向モードだけ誤注釈または未注釈の退行を見逃します。  
+[Medium] Task 4 Step 3 の実装例（計画 265-270）が `self._call_gemini(...)` 前提で、現行 `retranslation.py` の Gemini/OpenAI 両分岐を保ったまま共通後処理する責務分割が計画上明文化されていません。backend 共通の「LLM 応答取得後に 1 回だけ annotate」に書き換えないと、OpenAI 側の適用漏れが残ります。  
+[Medium] Task 3 Step 1/5（計画 181-223）が `annotate_translation` の call count を主に見ており、「注釈済み文字列が実際に history と workspace/retranslation UI に入る」ことの確認が弱いです。現行 UI は `history.append()` 済みデータを再利用する設計なので、ここを optional 扱いにすると assist/minutes は無事でも通常翻訳表示だけ raw のまま、という半壊れ状態を通してしまいます。
