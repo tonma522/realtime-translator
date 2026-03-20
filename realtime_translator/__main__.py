@@ -16,7 +16,7 @@ def main() -> None:
         ],
     )
     root = tk.Tk()
-    root.minsize(700, 620)
+    root.minsize(1020, 680)
     app = TranslatorApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
 

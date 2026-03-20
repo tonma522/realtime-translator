@@ -25,6 +25,7 @@ from .constants import (
 from .devices import enum_devices
 from .controller import TranslatorController, StartConfig
 from .config import save_config, load_config
+from .main_controls_panel import MainControlsPanel
 from .settings_window import SettingsWindow
 from .tools_panel import ToolsPanel
 from .stream_modes import (
@@ -34,6 +35,8 @@ from .stream_modes import (
     split_stream_id,
     translation_mode_to_label,
 )
+from .translation_timeline_panel import TranslationTimelinePanel
+from .ui_state import GlobalStatusResolver, SessionSummary, UiError, normalize_ui_error
 
 
 def format_stream_header(
@@ -68,10 +71,15 @@ class TranslatorApp:
         self.root.resizable(True, True)
 
         self._ui_queue: queue.Queue = queue.Queue()
+        self._global_status_resolver = GlobalStatusResolver()
+        self._session_error: UiError | None = None
+        self._runtime_status_message: str | None = "待機中"
+        self._is_initializing = False
+        self._ptt_recording = False
         self._controller = TranslatorController(
             self._ui_queue,
             on_error=lambda msg: self._append_error(msg),
-            on_status=lambda msg: self._status_var.set(f"状態: {msg}") if hasattr(self, "_status_var") else None,
+            on_status=self._handle_runtime_status,
         )
 
         self._stream_buffers: dict[str, dict] = {}
@@ -81,7 +89,10 @@ class TranslatorApp:
         self._saved_mic_name: str = ""
         self._pa = None
         self._settings_win: SettingsWindow | None = None
+        self._main_controls_panel: MainControlsPanel | None = None
         self._tools_panel: ToolsPanel | None = None
+        self._workspace_panel: ToolsPanel | None = None
+        self._timeline_panel: TranslationTimelinePanel | None = None
 
         try:
             self._build_ui()
@@ -97,17 +108,22 @@ class TranslatorApp:
 
     def _deferred_init(self) -> None:
         """Initialize PyAudio and populate device lists after the window is visible."""
-        self._status_var.set("状態: 初期化中...")
+        self._is_initializing = True
+        self._runtime_status_message = "初期化中..."
+        self._apply_global_status()
         self.root.update_idletasks()
         try:
             if PYAUDIO_AVAILABLE:
                 self._pa = pyaudio.PyAudio()
             self._refresh_devices()
-            self._status_var.set("状態: 待機中")
+            self._runtime_status_message = "待機中"
         except Exception as e:
             logging.exception("音声デバイス初期化エラー")
-            self._status_var.set("状態: 初期化エラー")
+            self._runtime_status_message = "初期化エラー"
             self._append_error(f"音声デバイス初期化エラー: {e}")
+        finally:
+            self._is_initializing = False
+            self._apply_global_status()
 
     # ─────────────────────────── 変数初期化 ───────────────────────────
 
@@ -145,63 +161,46 @@ class TranslatorApp:
     def _build_ui(self) -> None:
         self._create_variables()
         self.root.geometry("1100x750")
-        pad = {"padx": 8, "pady": 4}
+        self.root.minsize(1020, 680)
 
-        # ── 有効ストリーム ──
-        stream_frame = ttk.LabelFrame(self.root, text="有効ストリーム")
-        stream_frame.pack(fill="x", **pad)
-        ttk.Checkbutton(stream_frame, text="聴く (PC音声)", variable=self._enable_listen_var).pack(
-            side="left", padx=12, pady=4)
-        ttk.Checkbutton(stream_frame, text="話す (マイク)", variable=self._enable_speak_var).pack(
-            side="left", padx=12, pady=4)
-        ttk.Checkbutton(stream_frame, text="プッシュ・トゥ・トーク", variable=self._ptt_var).pack(
-            side="left", padx=12, pady=4)
-        ttk.Checkbutton(stream_frame, text="2フェーズ(STT→翻訳)", variable=self._two_phase_var).pack(
-            side="left", padx=12, pady=4)
-        self._two_phase_warning = ttk.Label(stream_frame, text="応答が遅くなります", foreground="red")
+        shell = ttk.Frame(self.root)
+        shell.pack(fill="both", expand=True, padx=8, pady=4)
+        shell.columnconfigure(0, minsize=300)
+        shell.columnconfigure(1, weight=1)
+        shell.columnconfigure(2, minsize=360)
+        shell.rowconfigure(0, weight=1)
+        self._shell = shell
+
+        self._main_controls_panel = MainControlsPanel(
+            shell,
+            on_toggle=self._toggle,
+            on_open_settings=self._open_settings,
+            on_clear=self._clear_result,
+            on_export=self._export_result,
+            enable_listen_var=self._enable_listen_var,
+            enable_speak_var=self._enable_speak_var,
+        )
+        self._main_controls_panel.frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self._start_btn = self._main_controls_panel.start_button
+        self._settings_btn = self._main_controls_panel.settings_button
+        self._ptt_frame = self._main_controls_panel.ptt_container
         def _on_two_phase_toggle(*_):
-            if self._two_phase_var.get():
-                self._two_phase_warning.pack(side="left", padx=(0, 8))
-            else:
-                self._two_phase_warning.pack_forget()
+            self._apply_session_summary()
         self._two_phase_var.trace_add("write", _on_two_phase_toggle)
-        ttk.Checkbutton(stream_frame, text="原文も表示", variable=self._show_original_var).pack(
-            side="left", padx=12, pady=4)
 
-        # ── PanedWindow (vertical, 7:3) ──
-        paned = ttk.PanedWindow(self.root, orient="vertical")
-        paned.pack(fill="both", expand=True, padx=8, pady=4)
+        center_frame = ttk.LabelFrame(shell, text="翻訳結果")
+        center_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
+        center_frame.columnconfigure(0, weight=1)
+        center_frame.rowconfigure(0, weight=1)
+        self._timeline_panel = TranslationTimelinePanel(center_frame)
+        self._timeline_panel.frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self._result_text = self._timeline_panel.result_text
+        self._status_var = self._timeline_panel.status_var
 
-        # Upper: translation results
-        result_frame = ttk.LabelFrame(paned, text="翻訳結果")
-        self._result_text = scrolledtext.ScrolledText(
-            result_frame, wrap="word", state="disabled", height=16, font=("Meiryo UI", 11))
-        self._result_text.pack(fill="both", expand=True, padx=4, pady=4)
-        for tag, opts in [
-            ("stream_listen", {"foreground": "#1565C0", "font": ("Meiryo UI", 10, "bold")}),
-            ("stream_speak",  {"foreground": "#E65100", "font": ("Meiryo UI", 10, "bold")}),
-            ("original",      {"foreground": "#555555", "font": ("Meiryo UI", 10, "italic")}),
-            ("translation",   {"foreground": "#000000", "font": ("Meiryo UI", 12, "bold")}),
-            ("error",         {"foreground": "#B71C1C", "font": ("Meiryo UI", 10)}),
-            ("separator",     {"foreground": "#cccccc"}),
-        ]:
-            self._result_text.tag_configure(tag, **opts)
-        paned.add(result_frame, weight=7)
+        self._workspace_panel = ToolsPanel(shell, self._controller)
+        self._tools_panel = self._workspace_panel
+        self._workspace_panel.frame.grid(row=0, column=2, sticky="nsew")
 
-        # Lower: tools panel
-        self._tools_panel = ToolsPanel(paned, self._controller)
-        paned.add(self._tools_panel.frame, weight=3)
-
-        # ── ボタン行 ──
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(fill="x", **pad)
-        self._start_btn = ttk.Button(btn_frame, text="▶ 翻訳開始", command=self._toggle)
-        self._start_btn.pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="クリア", command=self._clear_result).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="エクスポート", command=self._export_result).pack(side="left", padx=4)
-        self._settings_btn = ttk.Button(btn_frame, text="設定", command=self._open_settings)
-        self._settings_btn.pack(side="left", padx=4)
-        self._ptt_frame = ttk.Frame(btn_frame)
         self._ptt_btn = tk.Button(
             self._ptt_frame, text="🎙 録音 (押して話す)",
             bg="#FF8C00", fg="white", relief="raised",
@@ -210,11 +209,11 @@ class TranslatorApp:
         self._ptt_btn.pack(padx=8)
         self._ptt_btn.bind("<ButtonPress-1>",   lambda e: self._ptt_press())
         self._ptt_btn.bind("<ButtonRelease-1>", lambda e: self._ptt_release())
-        self._status_var = tk.StringVar(value="状態: 待機中")
-        ttk.Label(btn_frame, textvariable=self._status_var).pack(side="left", padx=16)
 
         self._ptt_var.trace_add("write", lambda *_: self._sync_recording_option_state())
         self._vad_var.trace_add("write", lambda *_: self._sync_recording_option_state())
+        self._register_summary_traces()
+        self._apply_session_summary()
 
     # ─────────────────────────── 設定ウィンドウ ───────────────────────────
 
@@ -246,6 +245,7 @@ class TranslatorApp:
         if self._settings_win and self._settings_win.is_open():
             self._settings_win.apply_recording_option_state(
                 ptt_on, vad_on, interval_enabled, two_phase_enabled)
+        self._apply_session_summary()
 
     def _sync_tool_states(self) -> None:
         if self._tools_panel is None:
@@ -255,6 +255,101 @@ class TranslatorApp:
             assist_enabled=self._controller.can_assist(),
             minutes_enabled=self._controller.can_assist(),
         )
+
+    def _register_summary_traces(self) -> None:
+        trace_vars = [
+            self._enable_listen_var,
+            self._enable_speak_var,
+            self._loopback_var,
+            self._mic_var,
+            self._ptt_var,
+            self._vad_var,
+            self._two_phase_var,
+            self._show_original_var,
+            self._pc_audio_mode_var,
+            self._mic_mode_var,
+            self._stt_backend_var,
+            self._llm_backend_var,
+            self._api_key_var,
+            self._openai_api_key_var,
+            self._openrouter_api_key_var,
+        ]
+        for var in trace_vars:
+            var.trace_add("write", lambda *_: self._apply_session_summary())
+
+    def _on_settings_values_changed(self) -> None:
+        self._apply_session_summary()
+
+    def _build_mode_summary(self) -> tuple[str, ...]:
+        if self._ptt_var.get():
+            recording_mode = "録音モード: PTT"
+        elif self._vad_var.get():
+            recording_mode = "録音モード: VAD"
+        else:
+            recording_mode = "録音モード: 通常"
+
+        stt_backend = self._STT_LABEL_TO_ID.get(self._stt_backend_var.get(), "gemini")
+        if stt_backend == "whisper":
+            translation_mode = "翻訳方式: Whisper"
+        elif stt_backend in ("openai", "openrouter"):
+            translation_mode = "翻訳方式: 外部STT"
+        elif self._two_phase_var.get():
+            translation_mode = "翻訳方式: 2フェーズ"
+        else:
+            translation_mode = "翻訳方式: 通常"
+
+        show_original = "原文表示: ON" if self._show_original_var.get() else "原文表示: OFF"
+        return (recording_mode, translation_mode, show_original)
+
+    def _build_session_summary(self) -> SessionSummary:
+        return SessionSummary(
+            listen_enabled=self._enable_listen_var.get(),
+            speak_enabled=self._enable_speak_var.get(),
+            pc_audio_label=f"PC音声: {self._pc_audio_mode_var.get()}",
+            mic_label=f"マイク: {self._mic_mode_var.get()}",
+            mode_summary=self._build_mode_summary(),
+        )
+
+    def _detect_start_blocker(self) -> str | None:
+        if self._controller.is_running:
+            return None
+        if not self._enable_listen_var.get() and not self._enable_speak_var.get():
+            return "少なくとも1つの入力を有効化してください"
+        if self._enable_listen_var.get() and not self._loopback_var.get():
+            return "ループバックデバイスが未選択です"
+        if self._enable_speak_var.get() and not self._mic_var.get():
+            return "マイクデバイスが未選択です"
+
+        stt_backend = self._STT_LABEL_TO_ID.get(self._stt_backend_var.get(), "gemini")
+        llm_backend = self._LLM_LABEL_TO_ID.get(self._llm_backend_var.get(), "gemini")
+        if (stt_backend == "gemini" or llm_backend == "gemini") and not self._api_key_var.get().strip():
+            return "Gemini APIキーが未設定です"
+        if (stt_backend == "openai" or llm_backend == "openai") and not self._openai_api_key_var.get().strip():
+            return "OpenAI APIキーが未設定です"
+        if (stt_backend == "openrouter" or llm_backend == "openrouter") and not self._openrouter_api_key_var.get().strip():
+            return "OpenRouter APIキーが未設定です"
+        return None
+
+    def _apply_session_summary(self) -> None:
+        if self._main_controls_panel is None:
+            return
+        summary = self._build_session_summary()
+        self._main_controls_panel.apply_session_summary(
+            listen_enabled=summary.listen_enabled,
+            speak_enabled=summary.speak_enabled,
+            pc_audio_label=summary.pc_audio_label,
+            mic_label=summary.mic_label,
+            mode_summary=list(summary.mode_summary),
+        )
+        start_label = "■ 翻訳停止" if self._controller.is_running else "▶ 翻訳開始"
+        self._main_controls_panel.set_toggle_button_text(start_label)
+
+        blocker_message = None
+        if self._session_error and self._session_error.severity == "blocker":
+            blocker_message = self._session_error.message
+        elif not self._controller.is_running:
+            blocker_message = self._detect_start_blocker()
+        self._main_controls_panel.set_blocker(blocker_message)
 
     # ─────────────────────────── デバイス ───────────────────────────
 
@@ -267,6 +362,7 @@ class TranslatorApp:
             self._set_combo(self._settings_win.loopback_combo, self._loopback_devices, "ループバックデバイスが見つかりません")
             self._set_combo(self._settings_win.mic_combo, self._mic_devices, "マイクデバイスが見つかりません")
             self._restore_device_selection()
+        self._apply_session_summary()
 
     def _set_combo(self, combo: ttk.Combobox, devices: list[dict], placeholder: str) -> None:
         combo["values"] = [d["name"] for d in devices] if devices else [placeholder]
@@ -309,10 +405,22 @@ class TranslatorApp:
         try:
             self._start_inner()
         except ValueError as e:
+            self._session_error = self._normalize_error_event(
+                str(e),
+                source_hint="startup",
+                severity_hint="blocker",
+            )
             self._append_error(str(e))
+            self._apply_global_status()
         except Exception as e:
             logging.exception("_start() で予期しないエラー")
+            self._session_error = self._normalize_error_event(
+                f"起動エラー: {e}",
+                source_hint="startup",
+                severity_hint="runtime",
+            )
             self._append_error(f"起動エラー: {e}")
+            self._apply_global_status()
 
     def _start_inner(self) -> None:
         enable_listen = self._enable_listen_var.get()
@@ -366,14 +474,16 @@ class TranslatorApp:
             custom_api_interval=self._api_interval_var.get() or None,
         )
         self._controller.start(config)
+        self._session_error = None
 
         # UI updates after successful start
-        self._start_btn.config(text="■ 翻訳停止")
         self._tools_panel.reset()
         self._sync_tool_states()
         streams = [s for s, en in [("聴く", enable_listen), ("話す", enable_speak)] if en]
         mode = "Whisper" if self._controller.use_whisper else ("2フェーズ" if self._controller.use_two_phase else "通常")
-        self._status_var.set(f"状態: 翻訳中... ({'+'.join(streams)}, {mode})")
+        self._runtime_status_message = f"翻訳中... ({'+'.join(streams)}, {mode})"
+        self._apply_global_status()
+        self._apply_session_summary()
 
         if enable_speak and config.ptt_enabled:
             self._ptt_btn.config(state="normal")
@@ -396,24 +506,71 @@ class TranslatorApp:
 
         self._controller.stop()
         self._stream_buffers.clear()
+        self._session_error = None
+        self._ptt_recording = False
 
-        self._start_btn.config(text="▶ 翻訳開始")
         self._tools_panel.reset()
         self._sync_tool_states()
-        self._status_var.set("状態: 停止中")
+        self._runtime_status_message = "停止中"
+        self._apply_global_status()
+        self._apply_session_summary()
 
     def _ptt_press(self) -> None:
         if self._controller.can_ptt:
             self._controller.ptt_press()
+            self._ptt_recording = True
             self._ptt_btn.config(text="🔴 録音中...", bg="#CC0000")
-            self._status_var.set("状態: 🎙 録音中 (Space/ボタンを離すと送信)")
+            self._apply_global_status()
 
     def _ptt_release(self) -> None:
         self._controller.ptt_release()
+        self._ptt_recording = False
         if self._ptt_btn["state"] != "disabled":
             self._ptt_btn.config(text="🎙 録音 (押して話す)", bg="#FF8C00")
             if self._controller.is_running:
-                self._status_var.set("状態: 翻訳中...")
+                self._runtime_status_message = "翻訳中..."
+        self._apply_global_status()
+
+    def _normalize_error_event(
+        self,
+        event: UiError | tuple | str,
+        *,
+        source_hint: str,
+        severity_hint: str = "runtime",
+        scope_hint: str = "session",
+    ) -> UiError:
+        return normalize_ui_error(
+            event,
+            source_hint=source_hint,
+            severity_hint=severity_hint,
+            scope_hint=scope_hint,
+        )
+
+    def _resolve_global_status(self):
+        session_error = None
+        if self._session_error and self._session_error.scope == "session":
+            session_error = self._session_error.message
+        return self._global_status_resolver.resolve(
+            session_error=session_error,
+            ptt_recording=self._ptt_recording,
+            running=self._controller.is_running,
+            initializing=self._is_initializing,
+            runtime_status_message=self._runtime_status_message,
+        )
+
+    def _apply_global_status(self) -> None:
+        timeline_panel = getattr(self, "_timeline_panel", None)
+        if timeline_panel is None and not hasattr(self, "_status_var"):
+            return
+        status = self._resolve_global_status()
+        if timeline_panel is not None:
+            timeline_panel.set_global_status(status.kind, status.message)
+        else:
+            self._status_var.set(f"状態: {status.message}")
+
+    def _handle_runtime_status(self, msg: str) -> None:
+        self._runtime_status_message = msg
+        self._apply_global_status()
 
     # ─────────────────────────── キューポーリング・UI更新 ───────────────────────────
 
@@ -447,8 +604,11 @@ class TranslatorApp:
                         _, stream_id, ts, text = item
                         self._on_transcript(stream_id, ts, text)
                     elif kind == "error":
-                        _, stream_id, msg = item
-                        self._append_error(f"[{stream_id}] {msg}")
+                        ui_error = self._normalize_error_event(item, source_hint="translation")
+                        self._session_error = ui_error
+                        prefix = f"[{ui_error.stream_id}] " if ui_error.stream_id else ""
+                        self._append_error(f"{prefix}{ui_error.message}")
+                        self._apply_global_status()
                     elif kind == "translation_done":
                         if len(item) == 5:
                             _, stream_id, ts, original, translation = item
@@ -489,7 +649,7 @@ class TranslatorApp:
                             self._tools_panel.on_minutes_error(request_id, msg)
                     elif kind == "status":
                         _, msg = item
-                        self._status_var.set(f"状態: {msg}")
+                        self._handle_runtime_status(msg)
                 except Exception:
                     logging.exception("キューアイテム処理エラー: %r", item)
         except queue.Empty:
@@ -503,10 +663,18 @@ class TranslatorApp:
 
     def _flush_active_partials(self) -> None:
         """進行中のpartialストリームをすべて確定する（新しいブロック挿入前に呼ぶ）"""
+        timeline_panel = getattr(self, "_timeline_panel", None)
+        if timeline_panel is not None:
+            timeline_panel.flush_active_partials()
+            return
         for sid in list(self._stream_buffers):
             self._on_partial_end(sid)
 
     def _on_partial_start(self, stream_id: str, ts: str) -> None:
+        timeline_panel = getattr(self, "_timeline_panel", None)
+        if timeline_panel is not None:
+            timeline_panel.on_partial_start(stream_id, ts)
+            return
         self._flush_active_partials()
         label, tag, langs = get_stream_meta(stream_id)
         with self._editable_result():
@@ -515,6 +683,10 @@ class TranslatorApp:
         self._stream_buffers[stream_id] = {"chunks": [], "mark": mark}
 
     def _on_partial(self, stream_id: str, text: str) -> None:
+        timeline_panel = getattr(self, "_timeline_panel", None)
+        if timeline_panel is not None:
+            timeline_panel.on_partial(stream_id, text)
+            return
         if stream_id not in self._stream_buffers:
             return
         self._stream_buffers[stream_id]["chunks"].append(text)
@@ -522,6 +694,10 @@ class TranslatorApp:
             self._result_text.insert("end", text)
 
     def _on_partial_end(self, stream_id: str) -> None:
+        timeline_panel = getattr(self, "_timeline_panel", None)
+        if timeline_panel is not None:
+            timeline_panel.on_partial_end(stream_id)
+            return
         buf = self._stream_buffers.pop(stream_id, None)
         if buf is None:
             return
@@ -535,6 +711,10 @@ class TranslatorApp:
     def _on_transcript(self, stream_id: str, ts: str, text: str) -> None:
         if not self._show_original_var.get():
             return
+        timeline_panel = getattr(self, "_timeline_panel", None)
+        if timeline_panel is not None:
+            timeline_panel.on_transcript(stream_id, ts, text)
+            return
         self._flush_active_partials()
         label, tag, langs = get_stream_meta(stream_id)
         with self._editable_result():
@@ -543,6 +723,10 @@ class TranslatorApp:
 
     def _append_error(self, msg: str) -> None:
         logging.error(msg)
+        timeline_panel = getattr(self, "_timeline_panel", None)
+        if timeline_panel is not None:
+            timeline_panel.on_runtime_error(None, msg)
+            return
         with self._editable_result():
             self._result_text.insert("end", f"[エラー] {msg}\n", "error")
 
@@ -641,6 +825,7 @@ class TranslatorApp:
         self._threshold_speak_var.set(config.get("silence_threshold_speak", MIC_SILENCE_RMS_THRESHOLD))
         self._api_interval_var.set(config.get("api_interval", 0.0))
         self._sync_recording_option_state()
+        self._apply_session_summary()
 
     # ─────────────────────────── 終了処理 ───────────────────────────
 

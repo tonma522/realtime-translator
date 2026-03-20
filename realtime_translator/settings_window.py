@@ -333,6 +333,21 @@ class SettingsWindow:
     def _register_traces(self) -> None:
         self._app._stt_backend_var.trace_add("write", lambda *_: self._update_backend_visibility())
         self._app._llm_backend_var.trace_add("write", lambda *_: self._update_backend_visibility())
+        tracked_vars = [
+            self._app._loopback_var,
+            self._app._mic_var,
+            self._app._enable_listen_var,
+            self._app._enable_speak_var,
+            self._app._ptt_var,
+            self._app._vad_var,
+            self._app._two_phase_var,
+            self._app._show_original_var,
+            self._app._pc_audio_mode_var,
+            self._app._mic_mode_var,
+        ]
+        for var in tracked_vars:
+            var.trace_add("write", lambda *_: self._app._on_settings_values_changed())
+        self._context_text.bind("<KeyRelease>", lambda *_: self._app._on_settings_values_changed())
 
     def _update_backend_visibility(self) -> None:
         stt = self._app._stt_backend_var.get()

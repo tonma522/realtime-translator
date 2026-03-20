@@ -1,6 +1,8 @@
 """ApiWorker 統合テスト: audio-chunk -> ApiWorker -> UI-queue パイプライン"""
 import queue
 import time
+import os
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -928,3 +930,64 @@ class TestStreamHeaderFormatting:
         from realtime_translator.app import format_stream_header
 
         assert format_stream_header("speak", "speak_ja_en", "ja_en") == "マイク 日本語→英語"
+
+
+class TestMainWindowLayout:
+    def test_main_window_uses_three_region_layout(self):
+        import tkinter as tk
+        from realtime_translator.app import TranslatorApp
+
+        python_dir = os.path.dirname(sys.executable)
+        os.environ["TCL_LIBRARY"] = os.path.join(python_dir, "tcl", "tcl8.6")
+        os.environ["TK_LIBRARY"] = os.path.join(python_dir, "tcl", "tk8.6")
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            with patch.object(TranslatorApp, "_poll_queue", lambda self: None), \
+                 patch.object(TranslatorApp, "_deferred_init", lambda self: None), \
+                 patch("realtime_translator.app.load_config", return_value={}):
+                app = TranslatorApp(root)
+            assert app._main_controls_panel is not None
+            assert app._timeline_panel is not None
+            assert getattr(app, "_workspace_panel", None) is not None
+        finally:
+            root.destroy()
+
+    def test_ptt_keybindings_survive_layout_swap(self):
+        import tkinter as tk
+        from realtime_translator.app import TranslatorApp
+        from realtime_translator.constants import _PTT_BINDINGS
+
+        python_dir = os.path.dirname(sys.executable)
+        os.environ["TCL_LIBRARY"] = os.path.join(python_dir, "tcl", "tcl8.6")
+        os.environ["TK_LIBRARY"] = os.path.join(python_dir, "tcl", "tk8.6")
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            with patch.object(TranslatorApp, "_poll_queue", lambda self: None), \
+                 patch.object(TranslatorApp, "_deferred_init", lambda self: None), \
+                 patch("realtime_translator.app.load_config", return_value={}):
+                app = TranslatorApp(root)
+
+            app._api_key_var.set("AI" + "x" * 37)
+            app._enable_listen_var.set(False)
+            app._enable_speak_var.set(True)
+            app._ptt_var.set(True)
+            app._mic_var.set("Mic A")
+            app._mic_devices = [{"name": "Mic A", "index": 1}]
+            app._loopback_devices = []
+
+            app._controller.start = MagicMock()
+            app._controller.stop = MagicMock()
+            app._controller._use_whisper = False
+            app._controller._use_two_phase = False
+
+            app._start_inner()
+            assert all(root.bind(event) for event in _PTT_BINDINGS)
+
+            app._stop()
+            assert all(not root.bind(event) for event in _PTT_BINDINGS)
+        finally:
+            root.destroy()
