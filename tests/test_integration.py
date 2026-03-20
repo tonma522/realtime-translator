@@ -63,6 +63,14 @@ def _drain_ui_queue(ui_queue: queue.Queue, timeout: float = 2.0):
     return messages
 
 
+def _make_tk_root():
+    python_dir = os.path.dirname(sys.executable)
+    os.environ["TCL_LIBRARY"] = os.path.join(python_dir, "tcl", "tcl8.6")
+    os.environ["TK_LIBRARY"] = os.path.join(python_dir, "tcl", "tk8.6")
+    import tkinter as tk
+    return tk.Tk()
+
+
 class TestEndToEnd:
     """Phase 0/2 ストリーミングの統合テスト"""
 
@@ -951,6 +959,38 @@ class TestMainWindowLayout:
             assert app._main_controls_panel is not None
             assert app._timeline_panel is not None
             assert getattr(app, "_workspace_panel", None) is not None
+        finally:
+            root.destroy()
+
+    def test_left_column_updates_session_config_and_quick_actions(self):
+        root = _make_tk_root()
+        root.withdraw()
+        try:
+            from realtime_translator.app import TranslatorApp
+
+            with patch.object(TranslatorApp, "_poll_queue", lambda self: None), \
+                 patch.object(TranslatorApp, "_deferred_init", lambda self: None), \
+                 patch("realtime_translator.app.load_config", return_value={}):
+                app = TranslatorApp(root)
+
+            app._loopback_devices = [{"name": "Speakers (Loopback)", "index": 1}]
+            app._mic_devices = [{"name": "Yeti Nano", "index": 2}]
+            app._loopback_var.set("Speakers (Loopback)")
+            app._mic_var.set("Yeti Nano")
+
+            dumped = app._main_controls_panel.dump_labels()
+            assert "PC音声デバイス: Speakers (Loopback)" in dumped
+            assert "マイクデバイス: Yeti Nano" in dumped
+            assert "STT: Gemini (内蔵) / 翻訳: Gemini" in dumped
+            assert "構成更新: " in dumped
+            assert app._main_controls_panel.quick_action_helper_text() == "結果がありません"
+
+            with app._editable_result():
+                app._result_text.insert("end", "テスト出力")
+            app._apply_session_summary()
+
+            assert app._main_controls_panel.quick_action_states()["clear"] == "normal"
+            assert app._main_controls_panel.quick_action_states()["export"] == "normal"
         finally:
             root.destroy()
 

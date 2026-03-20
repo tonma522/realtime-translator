@@ -53,7 +53,18 @@ def test_session_summary_formats_mode_summary():
         pc_audio_label="PC音声: 英語→日本語",
         mic_label="マイク: 日本語→英語",
         mode_summary=("PTT", "原文表示"),
+        device_summary=("PC音声デバイス: Speakers", "マイクデバイス: Yeti"),
+        backend_summary="STT: Gemini / 翻訳: Gemini",
+        config_updated_at="15:42:18",
     )
 
     assert summary.active_stream_labels == ("聴く",)
     assert summary.mode_summary_text == "PTT / 原文表示"
+    assert summary.configuration_lines == (
+        "PC音声: 英語→日本語",
+        "マイク: 日本語→英語",
+        "PC音声デバイス: Speakers",
+        "マイクデバイス: Yeti",
+        "STT: Gemini / 翻訳: Gemini",
+        "構成更新: 15:42:18",
+    )

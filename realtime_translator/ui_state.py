@@ -24,6 +24,9 @@ class SessionSummary:
     pc_audio_label: str
     mic_label: str
     mode_summary: tuple[str, ...] = ()
+    device_summary: tuple[str, str] = ("PC音声デバイス: 未取得", "マイクデバイス: 未取得")
+    backend_summary: str = "STT: 未設定 / 翻訳: 未設定"
+    config_updated_at: str = "未更新"
 
     @property
     def active_stream_labels(self) -> tuple[str, ...]:
@@ -37,6 +40,16 @@ class SessionSummary:
     @property
     def mode_summary_text(self) -> str:
         return " / ".join(self.mode_summary) if self.mode_summary else "通常"
+
+    @property
+    def configuration_lines(self) -> tuple[str, ...]:
+        return (
+            self.pc_audio_label,
+            self.mic_label,
+            *self.device_summary,
+            self.backend_summary,
+            f"構成更新: {self.config_updated_at}",
+        )
 
 
 @dataclass(frozen=True)

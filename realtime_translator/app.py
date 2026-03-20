@@ -76,6 +76,8 @@ class TranslatorApp:
         self._runtime_status_message: str | None = "待機中"
         self._is_initializing = False
         self._ptt_recording = False
+        self._session_config_updated_at = "未更新"
+        self._quick_action_feedback: str | None = None
         self._controller = TranslatorController(
             self._ui_queue,
             on_error=lambda msg: self._append_error(msg),
@@ -175,6 +177,7 @@ class TranslatorApp:
             shell,
             on_toggle=self._toggle,
             on_open_settings=self._open_settings,
+            on_reload_devices=self._handle_reload_devices,
             on_clear=self._clear_result,
             on_export=self._export_result,
             enable_listen_var=self._enable_listen_var,
@@ -224,7 +227,7 @@ class TranslatorApp:
         self._settings_win = SettingsWindow(self.root, self)
         # Populate device combos if available
         if self._loopback_devices or self._mic_devices:
-            self._refresh_devices()
+            self._refresh_devices(mark_updated=False)
         self._sync_recording_option_state()
 
     def _sync_recording_option_state(self) -> None:
@@ -257,6 +260,11 @@ class TranslatorApp:
         )
 
     def _register_summary_traces(self) -> None:
+        def _on_summary_var_write(*_):
+            self._mark_session_config_updated()
+            self._clear_quick_action_feedback()
+            self._apply_session_summary()
+
         trace_vars = [
             self._enable_listen_var,
             self._enable_speak_var,
@@ -275,10 +283,72 @@ class TranslatorApp:
             self._openrouter_api_key_var,
         ]
         for var in trace_vars:
-            var.trace_add("write", lambda *_: self._apply_session_summary())
+            var.trace_add("write", _on_summary_var_write)
 
     def _on_settings_values_changed(self) -> None:
+        self._mark_session_config_updated()
+        self._clear_quick_action_feedback()
         self._apply_session_summary()
+
+    def _mark_session_config_updated(self) -> None:
+        self._session_config_updated_at = datetime.now().strftime("%H:%M:%S")
+
+    def _clear_quick_action_feedback(self) -> None:
+        self._quick_action_feedback = None
+
+    def _result_has_content(self) -> bool:
+        result_text = getattr(self, "_result_text", None)
+        if result_text is None:
+            return False
+        return bool(result_text.get("1.0", "end").strip())
+
+    def _history_has_entries(self) -> bool:
+        return bool(self._controller.history.all_entries())
+
+    def _format_device_summary(self, device_name: str, *, missing_text: str) -> str:
+        value = device_name.strip()
+        return value if value else missing_text
+
+    def _build_backend_summary(self) -> str:
+        return f"STT: {self._stt_backend_var.get() or '未設定'} / 翻訳: {self._llm_backend_var.get() or '未設定'}"
+
+    def _derive_quick_action_helper_text(
+        self,
+        *,
+        reload_enabled: bool,
+        clear_enabled: bool,
+        export_enabled: bool,
+    ) -> str:
+        if self._is_initializing:
+            return "初期化中"
+        if self._controller.is_running or self._ptt_recording:
+            return "翻訳中は使えません"
+        if not clear_enabled and not export_enabled:
+            return "結果がありません"
+        if not export_enabled:
+            return "出力対象が空です"
+        if not reload_enabled and not PYAUDIO_AVAILABLE:
+            return "音声機能を利用できません"
+        return ""
+
+    def _apply_quick_action_state(self) -> None:
+        if self._main_controls_panel is None:
+            return
+
+        reload_enabled = PYAUDIO_AVAILABLE and not self._is_initializing and not self._controller.is_running and not self._ptt_recording
+        clear_enabled = self._result_has_content() or self._history_has_entries()
+        export_enabled = self._result_has_content()
+        helper_text = self._quick_action_feedback or self._derive_quick_action_helper_text(
+            reload_enabled=reload_enabled,
+            clear_enabled=clear_enabled,
+            export_enabled=export_enabled,
+        )
+        self._main_controls_panel.set_quick_action_state(
+            reload_enabled=reload_enabled,
+            clear_enabled=clear_enabled,
+            export_enabled=export_enabled,
+            helper_text=helper_text,
+        )
 
     def _build_mode_summary(self) -> tuple[str, ...]:
         if self._ptt_var.get():
@@ -302,12 +372,20 @@ class TranslatorApp:
         return (recording_mode, translation_mode, show_original)
 
     def _build_session_summary(self) -> SessionSummary:
+        loopback_missing = "未設定" if self._loopback_devices else "未取得"
+        mic_missing = "未設定" if self._mic_devices else "未取得"
         return SessionSummary(
             listen_enabled=self._enable_listen_var.get(),
             speak_enabled=self._enable_speak_var.get(),
             pc_audio_label=f"PC音声: {self._pc_audio_mode_var.get()}",
             mic_label=f"マイク: {self._mic_mode_var.get()}",
             mode_summary=self._build_mode_summary(),
+            device_summary=(
+                f"PC音声デバイス: {self._format_device_summary(self._loopback_var.get(), missing_text=loopback_missing)}",
+                f"マイクデバイス: {self._format_device_summary(self._mic_var.get(), missing_text=mic_missing)}",
+            ),
+            backend_summary=self._build_backend_summary(),
+            config_updated_at=self._session_config_updated_at,
         )
 
     def _detect_start_blocker(self) -> str | None:
@@ -340,6 +418,9 @@ class TranslatorApp:
             pc_audio_label=summary.pc_audio_label,
             mic_label=summary.mic_label,
             mode_summary=list(summary.mode_summary),
+            device_summary=summary.device_summary,
+            backend_summary=summary.backend_summary,
+            config_updated_at=summary.config_updated_at,
         )
         start_label = "■ 翻訳停止" if self._controller.is_running else "▶ 翻訳開始"
         self._main_controls_panel.set_toggle_button_text(start_label)
@@ -350,10 +431,11 @@ class TranslatorApp:
         elif not self._controller.is_running:
             blocker_message = self._detect_start_blocker()
         self._main_controls_panel.set_blocker(blocker_message)
+        self._apply_quick_action_state()
 
     # ─────────────────────────── デバイス ───────────────────────────
 
-    def _refresh_devices(self) -> None:
+    def _refresh_devices(self, *, mark_updated: bool = True) -> None:
         if not PYAUDIO_AVAILABLE:
             return
         self._loopback_devices = enum_devices(loopback=True, pa=self._pa)
@@ -362,7 +444,29 @@ class TranslatorApp:
             self._set_combo(self._settings_win.loopback_combo, self._loopback_devices, "ループバックデバイスが見つかりません")
             self._set_combo(self._settings_win.mic_combo, self._mic_devices, "マイクデバイスが見つかりません")
             self._restore_device_selection()
+        if mark_updated:
+            self._mark_session_config_updated()
         self._apply_session_summary()
+
+    def _handle_reload_devices(self) -> None:
+        self._clear_quick_action_feedback()
+        try:
+            self._refresh_devices()
+            if self._session_error and self._session_error.source == "settings":
+                self._session_error = None
+            self._apply_global_status()
+            self._apply_session_summary()
+        except Exception as e:
+            logging.exception("デバイス再読込失敗")
+            message = f"デバイス再読込に失敗しました: {e}"
+            self._quick_action_feedback = message
+            self._session_error = self._normalize_error_event(
+                message,
+                source_hint="settings",
+                severity_hint="blocker",
+            )
+            self._apply_global_status()
+            self._apply_session_summary()
 
     def _set_combo(self, combo: ttk.Combobox, devices: list[dict], placeholder: str) -> None:
         combo["values"] = [d["name"] for d in devices] if devices else [placeholder]
@@ -475,6 +579,7 @@ class TranslatorApp:
         )
         self._controller.start(config)
         self._session_error = None
+        self._clear_quick_action_feedback()
 
         # UI updates after successful start
         self._tools_panel.reset()
@@ -508,6 +613,7 @@ class TranslatorApp:
         self._stream_buffers.clear()
         self._session_error = None
         self._ptt_recording = False
+        self._clear_quick_action_feedback()
 
         self._tools_panel.reset()
         self._sync_tool_states()
@@ -654,6 +760,8 @@ class TranslatorApp:
                     logging.exception("キューアイテム処理エラー: %r", item)
         except queue.Empty:
             pass
+        if had_items:
+            self._apply_session_summary()
         # Adaptive polling: always 10ms during translation, 50ms when idle
         if self._controller.is_running:
             interval = 10
@@ -731,24 +839,35 @@ class TranslatorApp:
             self._result_text.insert("end", f"[エラー] {msg}\n", "error")
 
     def _clear_result(self) -> None:
+        self._clear_quick_action_feedback()
         with self._editable_result():
             self._result_text.delete("1.0", "end")
         self._controller.history.clear()
         self._tools_panel.refresh_history()
         self._sync_tool_states()
+        self._apply_session_summary()
 
     def _export_result(self) -> None:
+        self._clear_quick_action_feedback()
         text = self._result_text.get("1.0", "end").strip()
         if not text:
+            self._apply_session_summary()
             return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("テキストファイル", "*.txt")],
-            initialfile=f"translation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-        )
-        if path:
-            Path(path).write_text(text, encoding="utf-8")
-            self._status_var.set(f"状態: エクスポート完了 → {Path(path).name}")
+        try:
+            path = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("テキストファイル", "*.txt")],
+                initialfile=f"translation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            )
+            if path:
+                Path(path).write_text(text, encoding="utf-8")
+                self._status_var.set(f"状態: エクスポート完了 → {Path(path).name}")
+        except Exception as e:
+            message = f"保存に失敗しました: {e}"
+            self._quick_action_feedback = message
+            self._status_var.set(f"状態: エクスポート失敗: {e}")
+        finally:
+            self._apply_session_summary()
 
     # ─────────────────────────── 設定永続化 ───────────────────────────
 
@@ -824,6 +943,7 @@ class TranslatorApp:
         self._threshold_listen_var.set(config.get("silence_threshold_listen", SILENCE_RMS_THRESHOLD))
         self._threshold_speak_var.set(config.get("silence_threshold_speak", MIC_SILENCE_RMS_THRESHOLD))
         self._api_interval_var.set(config.get("api_interval", 0.0))
+        self._mark_session_config_updated()
         self._sync_recording_option_state()
         self._apply_session_summary()
 
