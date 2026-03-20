@@ -35,6 +35,7 @@ from .stream_modes import (
     split_stream_id,
     translation_mode_to_label,
 )
+from .translation_postprocess import annotate_translation
 from .translation_timeline_panel import TranslationTimelinePanel
 from .ui_state import GlobalStatusResolver, SessionSummary, UiError, normalize_ui_error
 
@@ -618,11 +619,23 @@ class TranslatorApp:
                             error = None
                         else:
                             _, source_stream_id, virtual_stream_id, resolved_direction, ts, original, translation, error = item
+                        output_language = self._resolve_output_language(
+                            virtual_stream_id=virtual_stream_id,
+                            resolved_direction=resolved_direction,
+                        )
+                        try:
+                            annotated_translation = annotate_translation(
+                                translation,
+                                output_language=output_language,
+                            )
+                        except Exception:
+                            logging.exception("translation annotation failed; keeping raw translation")
+                            annotated_translation = translation
                         entry = self._controller.history.append(
                             source_stream_id,
                             ts,
                             original,
-                            translation,
+                            annotated_translation,
                             virtual_stream_id=virtual_stream_id,
                             resolved_direction=resolved_direction,
                             error=error,
@@ -660,6 +673,19 @@ class TranslatorApp:
         else:
             interval = 10 if had_items else 50
         self.root.after(interval, self._poll_queue)
+
+    @staticmethod
+    def _resolve_output_language(
+        *,
+        virtual_stream_id: str,
+        resolved_direction: str | None,
+    ) -> str:
+        if resolved_direction == "en_ja":
+            return "ja"
+        if resolved_direction == "ja_en":
+            return "en"
+        _, mode = split_stream_id(virtual_stream_id)
+        return "ja" if mode == "en_ja" else "en"
 
     def _flush_active_partials(self) -> None:
         """進行中のpartialストリームをすべて確定する（新しいブロック挿入前に呼ぶ）"""

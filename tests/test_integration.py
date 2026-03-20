@@ -10,6 +10,7 @@ import pytest
 import realtime_translator.api as api_module
 from realtime_translator.api import ApiWorker, ApiRequest
 from realtime_translator.constants import SILENCE_SENTINEL
+from realtime_translator.history import TranslationHistory
 
 # genai_types が None の環境でも動作するようモックを用意
 _mock_genai_types = MagicMock()
@@ -61,6 +62,22 @@ def _drain_ui_queue(ui_queue: queue.Queue, timeout: float = 2.0):
             if messages:
                 break
     return messages
+
+
+def _make_poll_queue_app():
+    from realtime_translator.app import TranslatorApp
+
+    app = object.__new__(TranslatorApp)
+    app._ui_queue = queue.Queue()
+    app._controller = MagicMock()
+    app._controller.history = TranslationHistory()
+    app._controller.is_running = False
+    app._controller.can_retranslate.return_value = True
+    app._controller.can_assist.return_value = True
+    app._tools_panel = MagicMock()
+    app._sync_tool_states = MagicMock()
+    app.root = MagicMock()
+    return app
 
 
 class TestEndToEnd:
@@ -918,6 +935,71 @@ class TestShowOriginal:
 
         app._flush_active_partials.assert_called_once()
         assert result_text.insert.call_count >= 2
+
+
+class TestAnnotationIntegration:
+    def test_translation_done_legacy_tuple_annotates_with_fixed_output_language(self):
+        from realtime_translator.app import TranslatorApp
+
+        app = _make_poll_queue_app()
+        with patch(
+            "realtime_translator.app.annotate_translation",
+            return_value="12 mm (0.47 in, twelve millimeters)",
+        ) as annotate:
+            app._ui_queue.put(("translation_done", "listen_en_ja", "12:00:00", "12 mm", "12 mm"))
+            TranslatorApp._poll_queue(app)
+
+        annotate.assert_called_once_with("12 mm", output_language="ja")
+        entry = app._controller.history.all_entries()[-1]
+        assert entry.original == "12 mm"
+        assert entry.translation == "12 mm (0.47 in, twelve millimeters)"
+        assert entry.virtual_stream_id == "listen_en_ja"
+        assert entry.resolved_direction == "en_ja"
+        assert entry.error is None
+
+    def test_translation_done_auto_tuple_uses_resolved_direction_for_output_language(self):
+        from realtime_translator.app import TranslatorApp
+
+        app = _make_poll_queue_app()
+        with patch(
+            "realtime_translator.app.annotate_translation",
+            return_value="35 psi (0.24 MPa / 2.41 bar, thirty-five psi)",
+        ) as annotate:
+            app._ui_queue.put(
+                ("translation_done", "listen", "listen_auto", "ja_en", "12:00:01", "35 psi", "35 psi", None)
+            )
+            TranslatorApp._poll_queue(app)
+
+        annotate.assert_called_once_with("35 psi", output_language="en")
+        entry = app._controller.history.all_entries()[-1]
+        assert entry.translation == "35 psi (0.24 MPa / 2.41 bar, thirty-five psi)"
+        assert entry.virtual_stream_id == "listen_auto"
+        assert entry.resolved_direction == "ja_en"
+        assert entry.error is None
+
+    def test_translation_done_annotation_failure_falls_back_to_raw(self):
+        from realtime_translator.app import TranslatorApp
+
+        app = _make_poll_queue_app()
+        with patch("realtime_translator.app.annotate_translation", side_effect=RuntimeError("boom")):
+            app._ui_queue.put(("translation_done", "listen_en_ja", "12:00:00", "12 mm", "12 mm"))
+            TranslatorApp._poll_queue(app)
+
+        entry = app._controller.history.all_entries()[-1]
+        assert entry.translation == "12 mm"
+
+    def test_transcript_event_is_not_annotated_and_does_not_append_history(self):
+        from realtime_translator.app import TranslatorApp
+
+        app = _make_poll_queue_app()
+        app._on_transcript = MagicMock()
+        with patch("realtime_translator.app.annotate_translation") as annotate:
+            app._ui_queue.put(("transcript", "listen_en_ja", "12:00:00", "12 mm"))
+            TranslatorApp._poll_queue(app)
+
+        annotate.assert_not_called()
+        app._on_transcript.assert_called_once_with("listen_en_ja", "12:00:00", "12 mm")
+        assert app._controller.history.all_entries() == []
 
 
 class TestStreamHeaderFormatting:
