@@ -1023,6 +1023,17 @@ class TestAnnotationIntegration:
         annotate.assert_not_called()
         app._tools_panel.on_minutes_result.assert_called_once_with("req2", "hello")
 
+    def test_output_language_resolution_fallback_is_deterministic(self):
+        from realtime_translator.app import TranslatorApp
+
+        assert (
+            TranslatorApp._resolve_output_language(
+                virtual_stream_id="listen_auto",
+                resolved_direction="unexpected",
+            )
+            == "ja"
+        )
+
 
 class TestStreamHeaderFormatting:
     def test_partial_header_uses_pending_auto_label_until_direction_resolves(self):

@@ -236,71 +236,71 @@ def _build_unit_annotation(number_text: str, unit_text: str, language: str) -> s
 
 
 def _convert_single_value(number_text: str, unit_text: str) -> dict[str, str] | None:
-    sign, number_value = _split_sign(number_text)
+    sign, number_value, converted_input = _parse_number_for_conversion(number_text)
     converted_value: Decimal
     converted_unit: str
     if unit_text == "mm":
-        converted_value = number_value / MM_PER_INCH
+        converted_value = converted_input / MM_PER_INCH
         converted_unit = "in"
         rendered_value = _format_value(converted_value, 2, tolerance=sign == "±")
     elif unit_text == "cm":
-        converted_value = number_value / Decimal("2.54")
+        converted_value = converted_input / Decimal("2.54")
         converted_unit = "in"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "m":
-        converted_value = number_value * Decimal("3.28084")
+        converted_value = converted_input * Decimal("3.28084")
         converted_unit = "ft"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "in":
-        converted_value = number_value * MM_PER_INCH
+        converted_value = converted_input * MM_PER_INCH
         converted_unit = "mm"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "ft":
-        converted_value = number_value / Decimal("3.28084")
+        converted_value = converted_input / Decimal("3.28084")
         converted_unit = "m"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "g":
-        converted_value = number_value / Decimal("453.59237")
+        converted_value = converted_input / Decimal("453.59237")
         converted_unit = "lb"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "kg":
-        converted_value = number_value * LB_PER_KG
+        converted_value = converted_input * LB_PER_KG
         converted_unit = "lb"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "lb":
-        converted_value = number_value / LB_PER_KG
+        converted_value = converted_input / LB_PER_KG
         converted_unit = "kg"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "C":
-        converted_value = (number_value * Decimal("9") / Decimal("5")) + Decimal("32")
+        converted_value = (converted_input * Decimal("9") / Decimal("5")) + Decimal("32")
         converted_unit = "F"
-        rendered_value = _format_value(converted_value, 1)
+        rendered_value = _format_value(converted_value, 1, keep_trailing=True)
     elif unit_text == "F":
-        converted_value = (number_value - Decimal("32")) * Decimal("5") / Decimal("9")
+        converted_value = (converted_input - Decimal("32")) * Decimal("5") / Decimal("9")
         converted_unit = "C"
-        rendered_value = _format_value(converted_value, 1)
+        rendered_value = _format_value(converted_value, 1, keep_trailing=True)
     elif unit_text == "Nm":
-        converted_value = number_value * LBF_FT_PER_NM
+        converted_value = converted_input * LBF_FT_PER_NM
         converted_unit = "lbf·ft"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "lbf·ft":
-        converted_value = number_value / LBF_FT_PER_NM
+        converted_value = converted_input / LBF_FT_PER_NM
         converted_unit = "Nm"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "psi":
-        mpa_value = _format_value(number_value / PSI_PER_MPA, 2)
-        bar_value = _format_value(number_value / PSI_PER_BAR, 2)
+        mpa_value = _format_value(converted_input / PSI_PER_MPA, 2)
+        bar_value = _format_value(converted_input / PSI_PER_BAR, 2)
         return {
             "value": f"{sign}{mpa_value} MPa / {sign}{bar_value} bar",
             "unit": "",
             "rendered": f"{sign}{mpa_value} MPa / {sign}{bar_value} bar",
         }
     elif unit_text == "MPa":
-        converted_value = number_value * PSI_PER_MPA
+        converted_value = converted_input * PSI_PER_MPA
         converted_unit = "psi"
         rendered_value = _format_value(converted_value, 2)
     elif unit_text == "bar":
-        converted_value = number_value * PSI_PER_BAR
+        converted_value = converted_input * PSI_PER_BAR
         converted_unit = "psi"
         rendered_value = _format_value(converted_value, 2)
     else:
@@ -319,9 +319,15 @@ def _split_sign(number_text: str) -> tuple[str, Decimal]:
     return "", Decimal(number_text)
 
 
-def _format_value(value: Decimal, places: int, *, tolerance: bool = False) -> str:
+def _format_value(
+    value: Decimal,
+    places: int,
+    *,
+    tolerance: bool = False,
+    keep_trailing: bool = False,
+) -> str:
     quantized = value.quantize(Decimal("1").scaleb(-places), rounding=ROUND_HALF_UP)
-    text = _trim_decimal(quantized)
+    text = format(quantized, f".{places}f") if keep_trailing else _trim_decimal(quantized)
     if tolerance and quantized == 0:
         for extra_places in range(places + 1, 7):
             quantized = value.quantize(Decimal("1").scaleb(-extra_places), rounding=ROUND_HALF_UP)
@@ -336,6 +342,17 @@ def _trim_decimal(value: Decimal) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text
+
+
+def _parse_number_for_conversion(number_text: str) -> tuple[str, Decimal, Decimal]:
+    if number_text.startswith("±"):
+        magnitude = Decimal(number_text[1:])
+        return "±", magnitude, magnitude
+    if number_text.startswith("+"):
+        value = Decimal(number_text[1:])
+        return "+", value, value
+    value = Decimal(number_text)
+    return "", abs(value), value
 
 
 def _render_unit_reading(number_text: str, unit_text: str) -> str:

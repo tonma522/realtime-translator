@@ -684,7 +684,9 @@ class TranslatorApp:
             return "ja"
         if resolved_direction == "ja_en":
             return "en"
-        _, mode = split_stream_id(virtual_stream_id)
+        source_stream_id, mode = split_stream_id(virtual_stream_id)
+        if mode == "auto":
+            _, mode = split_stream_id(source_stream_id)
         return "ja" if mode == "en_ja" else "en"
 
     def _flush_active_partials(self) -> None:
