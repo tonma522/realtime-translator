@@ -1001,6 +1001,28 @@ class TestAnnotationIntegration:
         app._on_transcript.assert_called_once_with("listen_en_ja", "12:00:00", "12 mm")
         assert app._controller.history.all_entries() == []
 
+    def test_assist_result_routes_to_on_assist_result_without_annotation(self):
+        from realtime_translator.app import TranslatorApp
+
+        app = _make_poll_queue_app()
+        with patch("realtime_translator.app.annotate_translation") as annotate:
+            app._ui_queue.put(("assist_result", "req1", "reply_assist", "hello"))
+            TranslatorApp._poll_queue(app)
+
+        annotate.assert_not_called()
+        app._tools_panel.on_assist_result.assert_called_once_with("req1", "hello")
+
+    def test_minutes_result_routes_to_on_minutes_result_without_annotation(self):
+        from realtime_translator.app import TranslatorApp
+
+        app = _make_poll_queue_app()
+        with patch("realtime_translator.app.annotate_translation") as annotate:
+            app._ui_queue.put(("assist_result", "req2", "minutes", "hello"))
+            TranslatorApp._poll_queue(app)
+
+        annotate.assert_not_called()
+        app._tools_panel.on_minutes_result.assert_called_once_with("req2", "hello")
+
 
 class TestStreamHeaderFormatting:
     def test_partial_header_uses_pending_auto_label_until_direction_resolves(self):
