@@ -41,7 +41,7 @@ class TestSaveLoadConfig:
         result = load_config()
         _auto_fields = {"api_key", "openai_api_key", "openrouter_api_key", "api_interval"}
         non_auto_fields = {k: v for k, v in result.items() if k not in _auto_fields}
-        assert non_auto_fields == {}
+        assert non_auto_fields == {"pc_audio_mode": "en_ja", "mic_mode": "ja_en"}
         assert result["api_interval"] == 0.0
 
     def test_corrupt_json_returns_empty_or_keyring_only(self, tmp_config):
@@ -49,8 +49,14 @@ class TestSaveLoadConfig:
         result = load_config()
         _auto_fields = {"api_key", "openai_api_key", "openrouter_api_key", "api_interval"}
         non_auto_fields = {k: v for k, v in result.items() if k not in _auto_fields}
-        assert non_auto_fields == {}
+        assert non_auto_fields == {"pc_audio_mode": "en_ja", "mic_mode": "ja_en"}
         assert result["api_interval"] == 0.0
+
+    def test_load_config_restores_pc_audio_mode_and_mic_mode(self, tmp_config):
+        save_config({"pc_audio_mode": "auto", "mic_mode": "en_ja"})
+        loaded = load_config()
+        assert loaded["pc_audio_mode"] == "auto"
+        assert loaded["mic_mode"] == "en_ja"
 
 
 class TestApiKeyStorage:

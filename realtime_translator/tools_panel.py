@@ -158,12 +158,13 @@ class ToolsPanel:
         orig = entry.original[:40]
         if len(entry.original) > 40:
             orig += "..."
+        error_suffix = f" エラー: {entry.error}" if entry.error else ""
         self._latest_label.configure(
-            text=f"最新: #{entry.seq} [{entry.timestamp}] {label}: {orig}"
+            text=f"最新: #{entry.seq} [{entry.timestamp}] {label}: {orig}{error_suffix}"
         )
 
         # Append to listbox
-        display = f"#{entry.seq} [{entry.timestamp}] {label}: {orig}"
+        display = f"#{entry.seq} [{entry.timestamp}] {label}: {orig}{error_suffix}"
         idx = self._retrans_listbox.size()
         self._retrans_listbox.insert("end", display)
         self._entry_map[idx] = entry.seq
@@ -183,7 +184,8 @@ class ToolsPanel:
             orig = entry.original[:40]
             if len(entry.original) > 40:
                 orig += "..."
-            display = f"#{entry.seq} [{entry.timestamp}] {label}: {orig}"
+            error_suffix = f" エラー: {entry.error}" if entry.error else ""
+            display = f"#{entry.seq} [{entry.timestamp}] {label}: {orig}{error_suffix}"
             idx = self._retrans_listbox.size()
             self._retrans_listbox.insert("end", display)
             self._entry_map[idx] = entry.seq
@@ -203,6 +205,13 @@ class ToolsPanel:
 
         seq = self._entry_map.get(idx)
         if seq is None:
+            return
+
+        entry = self._controller.history.get_by_seq(seq)
+        if entry is not None and not entry.usable_for_downstream:
+            self._retrans_status.configure(text=f"エラー: {entry.error}")
+            self._retrans_btn.configure(state="normal")
+            self._pending_retrans_id = None
             return
 
         batch_id = self._controller.request_retranslation(seq, self._range_var.get())

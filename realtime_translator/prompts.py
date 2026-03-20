@@ -1,10 +1,21 @@
 """プロンプト生成"""
-from .constants import SILENCE_SENTINEL, STREAM_LANGS
+from .constants import SILENCE_SENTINEL
+from .stream_modes import get_stream_languages, is_auto_stream
 
 
 def build_prompt(stream_id: str, context: str, show_original: bool = True) -> str:
     """通常モード: 音声→STT+翻訳 (phase=0)"""
-    src, dst = STREAM_LANGS[stream_id]
+    if is_auto_stream(stream_id):
+        return (
+            "You are a realtime translation assistant.\n"
+            f"[Context] {context}\n\n"
+            "Decide whether the input is English or Japanese and translate it to the opposite language.\n"
+            "Reply in this exact format:\n"
+            "DIRECTION: en_ja | ja_en\n"
+            "TRANSLATION: <translated text>\n\n"
+            f"If silent or inaudible, respond with only \"{SILENCE_SENTINEL}\"."
+        )
+    src, dst = get_stream_languages(stream_id)
     if show_original:
         output_fmt = (
             "Output format (strictly follow this):\n"
@@ -24,7 +35,7 @@ def build_prompt(stream_id: str, context: str, show_original: bool = True) -> st
 
 def build_stt_prompt(stream_id: str) -> str:
     """2フェーズ Phase1: 音声→文字起こしのみ (phase=1)"""
-    src, _ = STREAM_LANGS[stream_id]
+    src, _ = get_stream_languages(stream_id)
     return (
         f"Transcribe this audio in {src} exactly as spoken. Do not translate."
         f" If silent or inaudible, respond with only \"{SILENCE_SENTINEL}\"."
@@ -33,7 +44,17 @@ def build_stt_prompt(stream_id: str) -> str:
 
 def build_translation_prompt(stream_id: str, context: str, transcript: str) -> str:
     """2フェーズ Phase2: テキスト→翻訳のみ (phase=2)"""
-    src, dst = STREAM_LANGS[stream_id]
+    if is_auto_stream(stream_id):
+        return (
+            "You are a realtime translation assistant.\n"
+            f"[Context] {context}\n\n"
+            "Decide whether the following text is English or Japanese and translate it to the opposite language.\n"
+            f"Text: {transcript}\n"
+            "Reply in this exact format:\n"
+            "DIRECTION: en_ja | ja_en\n"
+            "TRANSLATION: <translated text>"
+        )
+    src, dst = get_stream_languages(stream_id)
     return (
         f"[Context] {context}\n"
         f"Translate the following {src} text to {dst}.\n"
@@ -91,7 +112,7 @@ def build_retranslation_prompt(
     history_block: str,
 ) -> str:
     """再翻訳プロンプト: 会話履歴ブロック + ターゲットマーカー付き"""
-    src, dst = STREAM_LANGS[stream_id]
+    src, dst = get_stream_languages(stream_id)
     return (
         "You are a realtime translation assistant.\n"
         f"[Context] {context}\n\n"

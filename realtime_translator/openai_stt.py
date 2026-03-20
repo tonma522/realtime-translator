@@ -6,9 +6,11 @@ import threading
 from datetime import datetime
 
 from .api import ApiRequest, ApiWorker
+from .auto_direction import resolve_direction_from_stt_language
 from .constants import OPENAI_STT_DEFAULT_MODEL
 from .openai_llm import _localize_openai_error
 from .prompts import build_translation_prompt
+from .stream_modes import is_auto_stream, split_stream_id
 from .worker_utils import send_stop_sentinel
 
 
@@ -97,15 +99,21 @@ class OpenAiSttWorker:
             ts = datetime.now().strftime("%H:%M:%S")
             self._is_busy = True
             try:
-                transcript = self._transcribe(wav_bytes)
+                transcript, stt_language = self._transcribe(wav_bytes)
                 if transcript and transcript.strip():
                     self._ui_queue.put(("transcript", stream_id, ts, transcript))
-                    worker = self._api_workers.get(stream_id)
+                    source_stream_id = split_stream_id(stream_id)[0]
+                    worker = self._api_workers.get(source_stream_id)
                     if worker and worker.is_running:
+                        phase2_stream_id = stream_id
+                        if is_auto_stream(stream_id):
+                            resolved_direction, _ = resolve_direction_from_stt_language(stt_language)
+                            if resolved_direction is not None:
+                                phase2_stream_id = f"{source_stream_id}_{resolved_direction}"
                         worker.submit(ApiRequest(
                             wav_bytes=None,
-                            prompt=build_translation_prompt(stream_id, self._context, transcript),
-                            stream_id=stream_id, phase=2,
+                            prompt=build_translation_prompt(phase2_stream_id, self._context, transcript),
+                            stream_id=phase2_stream_id, phase=2,
                             context=self._context, transcript=transcript,
                         ))
             except Exception as e:
@@ -114,7 +122,7 @@ class OpenAiSttWorker:
                 self._is_busy = False
                 self._pending_requests = max(0, self._pending_requests - 1)
 
-    def _transcribe(self, wav_bytes: bytes) -> str:
+    def _transcribe(self, wav_bytes: bytes) -> tuple[str, str | None]:
         """OpenAI Whisper APIで文字起こし"""
         kwargs: dict = {"model": self._model, "file": ("audio.wav", io.BytesIO(wav_bytes), "audio/wav")}
         if self._language:
@@ -122,4 +130,4 @@ class OpenAiSttWorker:
         logging.debug("[OpenAiSttWorker] transcribe model=%s lang=%s bytes=%d",
                       self._model, self._language, len(wav_bytes))
         response = self._client.audio.transcriptions.create(**kwargs)
-        return response.text
+        return response.text, getattr(response, "language", None)

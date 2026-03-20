@@ -5,6 +5,7 @@ import os
 import stat
 
 from .constants import CONFIG_PATH
+from .stream_modes import normalize_translation_mode
 
 _KEYRING_SERVICE = "realtime-translator"
 _KEYRING_USERNAME = "gemini-api-key"
@@ -126,6 +127,10 @@ def save_config(data: dict) -> None:
         data["interval"] = _sanitize_interval(data["interval"])
     if "api_interval" in data:
         data["api_interval"] = _sanitize_api_interval(data["api_interval"])
+    if "pc_audio_mode" in data:
+        data["pc_audio_mode"] = normalize_translation_mode(data["pc_audio_mode"], "en_ja")
+    if "mic_mode" in data:
+        data["mic_mode"] = normalize_translation_mode(data["mic_mode"], "ja_en")
 
     # Extract all API keys and save to keyring
     for field, provider in _API_KEY_FIELDS.items():
@@ -161,6 +166,8 @@ def load_config() -> dict:
     if "interval" in config:
         config["interval"] = _sanitize_interval(config["interval"])
     config["api_interval"] = _sanitize_api_interval(config.get("api_interval", 0.0))
+    config["pc_audio_mode"] = normalize_translation_mode(config.get("pc_audio_mode"), "en_ja")
+    config["mic_mode"] = normalize_translation_mode(config.get("mic_mode"), "ja_en")
 
     # Migrate old JSON api_key to keyring
     json_key = config.pop("api_key", "")

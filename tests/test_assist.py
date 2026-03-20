@@ -9,7 +9,7 @@ import pytest
 import realtime_translator.assist as assist_module
 from realtime_translator.assist import (
     AssistWorker, AssistRequest, MAX_HISTORY_ENTRIES, MAX_HISTORY_CHARS,
-    _StopSentinel, _STOP,
+    _StopSentinel, _STOP, build_history_for_assist,
 )
 from realtime_translator.history import TranslationHistory
 
@@ -249,6 +249,15 @@ class TestLifecycle:
 
 
 class TestEdgeCases:
+    def test_build_history_for_assist_excludes_parse_failed_entries(self):
+        h = TranslationHistory()
+        h.append("listen", "12:00:00", "ok", "OK")
+        h.append("listen", "12:00:01", "bad", "", error="direction_parse_failed")
+
+        result = build_history_for_assist(h.all_entries())
+
+        assert [e.seq for e in result] == [1]
+
     def test_empty_history_error(self):
         empty_history = TranslationHistory()
         worker, ui_queue = _make_worker(history=empty_history)

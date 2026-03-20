@@ -3,6 +3,8 @@ import queue
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 from realtime_translator.history import TranslationHistory
 from realtime_translator.retranslation import RetranslationWorker
 
@@ -154,6 +156,32 @@ class TestRetranslationWorker:
         errors = [m for m in messages if m[0] == "retrans_error"]
         assert len(errors) == 1
         assert "999" in errors[0][2]
+
+    def test_direction_parse_failed_entry_is_rejected(self):
+        ui_q = queue.Queue()
+        h = TranslationHistory()
+        h.append(
+            "listen",
+            "12:00:00",
+            "Hello",
+            "",
+            error="direction_parse_failed",
+        )
+
+        mock_client = MagicMock()
+        worker = RetranslationWorker(
+            ui_queue=ui_q, history=h, workers=[],
+            llm_backend="gemini", model="test", api_key="key",
+            min_interval_sec=0,
+            client_factory=lambda: mock_client,
+        )
+
+        with pytest.raises(ValueError, match="direction_parse_failed"):
+            worker._execute_retranslation(
+                type("Req", (), {"center_seq": 1, "n_surrounding": 1, "context": "ctx", "batch_id": "batch"})(),
+                mock_client,
+            )
+        assert not mock_client.models.generate_content.called
 
     def test_stop_lifecycle(self):
         ui_q = queue.Queue()

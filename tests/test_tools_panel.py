@@ -1,4 +1,6 @@
 """ToolsPanel 結線テスト"""
+import os
+import sys
 import tkinter as tk
 from unittest.mock import MagicMock, patch
 import pytest
@@ -6,8 +8,11 @@ from realtime_translator.tools_panel import ToolsPanel
 from realtime_translator.history import HistoryEntry
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def root():
+    python_dir = os.path.dirname(sys.executable)
+    os.environ["TCL_LIBRARY"] = os.path.join(python_dir, "tcl", "tcl8.6")
+    os.environ["TK_LIBRARY"] = os.path.join(python_dir, "tcl", "tk8.6")
     root = tk.Tk()
     root.withdraw()
     yield root
@@ -31,6 +36,20 @@ class TestUpdateLatestEntry:
         panel.update_latest_entry(entry)
         assert "#1" in panel._latest_label.cget("text")
         assert "PC音声" in panel._latest_label.cget("text")
+
+    def test_error_entry_is_marked(self, panel):
+        entry = HistoryEntry(
+            seq=1,
+            stream_id="listen",
+            virtual_stream_id="listen_auto",
+            resolved_direction=None,
+            timestamp="12:00:00",
+            original="Hello world",
+            translation="",
+            error="direction_parse_failed",
+        )
+        panel.update_latest_entry(entry)
+        assert "エラー" in panel._latest_label.cget("text")
 
     def test_auto_selects_last(self, panel):
         for i in range(3):
@@ -72,6 +91,26 @@ class TestRetransResult:
         txt = panel._retrans_result_text.get("1.0", "end-1c")
         assert "再翻訳結果" in txt
         assert panel._pending_retrans_id is None
+
+    def test_execute_retrans_rejects_incomplete_entry(self, panel):
+        panel._retrans_listbox.insert("end", "#1 [12:00:00] PC音声: Hello")
+        panel._entry_map[0] = 1
+        panel._retrans_listbox.selection_set(0)
+        panel._controller.history.get_by_seq.return_value = HistoryEntry(
+            seq=1,
+            stream_id="listen",
+            virtual_stream_id="listen_auto",
+            resolved_direction=None,
+            timestamp="12:00:00",
+            original="Hello",
+            translation="",
+            error="direction_parse_failed",
+        )
+
+        panel._execute_retrans()
+
+        panel._controller.request_retranslation.assert_not_called()
+        assert "direction_parse_failed" in panel._retrans_status.cget("text")
 
 
 class TestSyncToolStates:

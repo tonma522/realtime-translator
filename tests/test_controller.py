@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
+from realtime_translator.auto_direction import resolve_direction_from_stt_language
 from realtime_translator.controller import TranslatorController, StartConfig
 
 # google-genai は未インストール環境でもテスト可能にする
@@ -268,19 +269,26 @@ class TestLifecycle:
 # ─────────────────────── Audio dispatch tests ───────────────────────
 
 class TestAudioDispatch:
+    def test_on_audio_chunk_uses_listen_auto_virtual_stream_id(self):
+        ctrl, _ = _make_controller()
+        ctrl.start(_make_config(pc_audio_mode="auto"))
+        ctrl.on_audio_chunk(b"wav", "listen")
+        req = ctrl._api_worker_listen.submitted[0]
+        assert req.stream_id == "listen_auto"
+
     def test_routes_listen_to_listen_worker(self):
         ctrl, _ = _make_controller()
         ctrl.start(_make_config())
         ctrl.on_audio_chunk(b"wav", "listen")
         assert len(ctrl._api_worker_listen.submitted) == 1
-        assert ctrl._api_worker_listen.submitted[0].stream_id == "listen"
+        assert ctrl._api_worker_listen.submitted[0].stream_id == "listen_en_ja"
 
     def test_routes_speak_to_speak_worker(self):
         ctrl, _ = _make_controller()
         ctrl.start(_make_config())
         ctrl.on_audio_chunk(b"wav", "speak")
         assert len(ctrl._api_worker_speak.submitted) == 1
-        assert ctrl._api_worker_speak.submitted[0].stream_id == "speak"
+        assert ctrl._api_worker_speak.submitted[0].stream_id == "speak_ja_en"
 
     def test_normal_mode_phase_0(self):
         ctrl, _ = _make_controller()
@@ -758,3 +766,8 @@ class TestResolveApiInterval:
         ctrl, _ = _make_controller(openai_llm_worker_factory=track_llm)
         ctrl.start(_make_config(llm_backend="openai", openai_api_key="sk-test"))
         assert all(w._min_interval == 0.5 for w in llm_workers)
+
+
+class TestResolveDirectionFromSttLanguage:
+    def test_openai_stt_metadata_en_resolves_to_en_ja(self):
+        assert resolve_direction_from_stt_language("en-US") == ("en_ja", "stt_metadata")

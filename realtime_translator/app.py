@@ -21,13 +21,32 @@ from .constants import (
     OPENAI_STT_MODELS,
     pyaudio,
     _PTT_BINDINGS,
-    _STREAM_META,
 )
 from .devices import enum_devices
 from .controller import TranslatorController, StartConfig
 from .config import save_config, load_config
 from .settings_window import SettingsWindow
 from .tools_panel import ToolsPanel
+from .stream_modes import (
+    get_stream_meta,
+    label_to_translation_mode,
+    normalize_translation_mode,
+    split_stream_id,
+    translation_mode_to_label,
+)
+
+
+def format_stream_header(
+    source_stream_id: str,
+    virtual_stream_id: str,
+    resolved_direction: str | None,
+) -> str:
+    if resolved_direction is None and virtual_stream_id.endswith("_auto"):
+        return "PC音声 同時翻訳" if source_stream_id == "listen" else "マイク 同時翻訳"
+
+    label = "PC音声" if source_stream_id == "listen" else "マイク"
+    direction = "英語→日本語" if resolved_direction == "en_ja" else "日本語→英語"
+    return f"{label} {direction}"
 
 
 class TranslatorApp:
@@ -111,6 +130,8 @@ class TranslatorApp:
         self._ptt_var = tk.BooleanVar(value=False)
         self._two_phase_var = tk.BooleanVar(value=False)
         self._show_original_var = tk.BooleanVar(value=True)
+        self._pc_audio_mode_var = tk.StringVar(value=translation_mode_to_label("en_ja"))
+        self._mic_mode_var = tk.StringVar(value=translation_mode_to_label("ja_en"))
         self._whisper_var = tk.BooleanVar(value=False)
         self._whisper_model_var = tk.StringVar(value="small")
         self._whisper_lang_var = tk.StringVar(value="auto")
@@ -129,9 +150,9 @@ class TranslatorApp:
         # ── 有効ストリーム ──
         stream_frame = ttk.LabelFrame(self.root, text="有効ストリーム")
         stream_frame.pack(fill="x", **pad)
-        ttk.Checkbutton(stream_frame, text="聴く (PC音声→日本語)", variable=self._enable_listen_var).pack(
+        ttk.Checkbutton(stream_frame, text="聴く (PC音声)", variable=self._enable_listen_var).pack(
             side="left", padx=12, pady=4)
-        ttk.Checkbutton(stream_frame, text="話す (マイク→英語)", variable=self._enable_speak_var).pack(
+        ttk.Checkbutton(stream_frame, text="話す (マイク)", variable=self._enable_speak_var).pack(
             side="left", padx=12, pady=4)
         ttk.Checkbutton(stream_frame, text="プッシュ・トゥ・トーク", variable=self._ptt_var).pack(
             side="left", padx=12, pady=4)
@@ -322,6 +343,14 @@ class TranslatorApp:
             request_whisper=request_whisper,
             request_two_phase=self._two_phase_var.get(),
             show_original=self._show_original_var.get(),
+            pc_audio_mode=normalize_translation_mode(
+                label_to_translation_mode(self._pc_audio_mode_var.get(), "en_ja"),
+                "en_ja",
+            ),
+            mic_mode=normalize_translation_mode(
+                label_to_translation_mode(self._mic_mode_var.get(), "ja_en"),
+                "ja_en",
+            ),
             whisper_model=self._whisper_model_var.get(),
             whisper_language=None if whisper_lang == "auto" else whisper_lang,
             stt_backend=stt_backend,
@@ -421,8 +450,23 @@ class TranslatorApp:
                         _, stream_id, msg = item
                         self._append_error(f"[{stream_id}] {msg}")
                     elif kind == "translation_done":
-                        _, stream_id, ts, original, translation = item
-                        entry = self._controller.history.append(stream_id, ts, original, translation)
+                        if len(item) == 5:
+                            _, stream_id, ts, original, translation = item
+                            source_stream_id, mode = split_stream_id(stream_id)
+                            virtual_stream_id = stream_id
+                            resolved_direction = None if mode == "auto" else mode
+                            error = None
+                        else:
+                            _, source_stream_id, virtual_stream_id, resolved_direction, ts, original, translation, error = item
+                        entry = self._controller.history.append(
+                            source_stream_id,
+                            ts,
+                            original,
+                            translation,
+                            virtual_stream_id=virtual_stream_id,
+                            resolved_direction=resolved_direction,
+                            error=error,
+                        )
                         self._tools_panel.update_latest_entry(entry)
                         self._sync_tool_states()
                     elif kind == "retrans_result":
@@ -464,7 +508,7 @@ class TranslatorApp:
 
     def _on_partial_start(self, stream_id: str, ts: str) -> None:
         self._flush_active_partials()
-        label, tag, langs = _STREAM_META[stream_id]
+        label, tag, langs = get_stream_meta(stream_id)
         with self._editable_result():
             mark = self._result_text.index("end-1c")
             self._result_text.insert("end", f"[{ts}] {label} {langs}\n", tag)
@@ -492,7 +536,7 @@ class TranslatorApp:
         if not self._show_original_var.get():
             return
         self._flush_active_partials()
-        label, tag, langs = _STREAM_META[stream_id]
+        label, tag, langs = get_stream_meta(stream_id)
         with self._editable_result():
             self._result_text.insert("end", f"[{ts}] {label} {langs}\n", tag)
             self._result_text.insert("end", f"原文: {text}\n", "original")
@@ -540,6 +584,8 @@ class TranslatorApp:
                 "vad_enabled": self._vad_var.get(),
                 "two_phase_enabled": self._two_phase_var.get(),
                 "show_original": self._show_original_var.get(),
+                "pc_audio_mode": label_to_translation_mode(self._pc_audio_mode_var.get(), "en_ja"),
+                "mic_mode": label_to_translation_mode(self._mic_mode_var.get(), "ja_en"),
                 "whisper_enabled": self._whisper_var.get(),
                 "whisper_model": self._whisper_model_var.get(),
                 "whisper_lang": self._whisper_lang_var.get(),
@@ -578,6 +624,8 @@ class TranslatorApp:
         self._vad_var.set(config.get("vad_enabled", False))
         self._two_phase_var.set(config.get("two_phase_enabled", False))
         self._show_original_var.set(config.get("show_original", True))
+        self._pc_audio_mode_var.set(translation_mode_to_label(config.get("pc_audio_mode", "en_ja")))
+        self._mic_mode_var.set(translation_mode_to_label(config.get("mic_mode", "ja_en")))
         self._whisper_var.set(config.get("whisper_enabled", False))
         self._whisper_model_var.set(config.get("whisper_model", "small"))
         self._whisper_lang_var.set(config.get("whisper_lang", "auto"))

@@ -8,6 +8,7 @@ from datetime import datetime
 from .constants import WHISPER_AVAILABLE, WhisperModel
 from .api import ApiRequest, ApiWorker
 from .prompts import build_translation_prompt
+from .stream_modes import split_stream_id
 from .worker_utils import send_stop_sentinel
 
 
@@ -116,7 +117,8 @@ class WhisperWorker:
                 transcript = self._transcriber.transcribe(wav_bytes)
                 if transcript and transcript.strip():
                     self._ui_queue.put(("transcript", stream_id, ts, transcript))
-                    worker = self._api_workers.get(stream_id)
+                    source_stream_id = split_stream_id(stream_id)[0]
+                    worker = self._api_workers.get(source_stream_id)
                     if worker and worker.is_running:
                         worker.submit(ApiRequest(
                             wav_bytes=None,

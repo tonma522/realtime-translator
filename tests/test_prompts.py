@@ -8,6 +8,11 @@ from realtime_translator.prompts import (
     build_reply_assist_prompt,
     build_minutes_prompt,
 )
+from realtime_translator.auto_direction import (
+    DirectionHeaderParser,
+    normalize_stt_language,
+    parse_direction_header,
+)
 
 
 class TestBuildPrompt:
@@ -49,6 +54,21 @@ class TestBuildPrompt:
     def test_show_original_default_is_true(self):
         result = build_prompt("listen", "ctx")
         assert "原文:" in result
+
+    def test_virtual_listen_auto_prompt_can_be_built(self):
+        result = build_prompt("listen_auto", "ctx")
+        assert "ctx" in result
+        assert SILENCE_SENTINEL in result
+
+    def test_build_prompt_for_llm_auto_contains_direction_and_translation_contract(self):
+        prompt = build_prompt("listen_auto", "会議", show_original=False)
+        assert "DIRECTION:" in prompt
+        assert "TRANSLATION:" in prompt
+
+    def test_build_prompt_for_fixed_direction_stream_still_returns_legacy_contract(self):
+        prompt = build_prompt("listen_en_ja", "会議", show_original=True)
+        assert "原文:" in prompt
+        assert "訳文:" in prompt
 
 
 class TestBuildSttPrompt:
@@ -93,6 +113,11 @@ class TestBuildTranslationPrompt:
     def test_prompt_is_english(self):
         result = build_translation_prompt("listen", "ctx", "text")
         assert "Translate" in result
+
+    def test_auto_translation_prompt_contains_direction_contract(self):
+        result = build_translation_prompt("listen_auto", "ctx", "hello")
+        assert "DIRECTION:" in result
+        assert "TRANSLATION:" in result
 
 
 class TestBuildRetranslationPrompt:
@@ -160,3 +185,21 @@ class TestBuildMinutesPrompt:
     def test_japanese_output_instruction(self):
         result = build_minutes_prompt("ctx", "history")
         assert "Japanese" in result
+
+
+class TestAutoDirection:
+    def test_parse_direction_header_accepts_crlf(self):
+        event = parse_direction_header("DIRECTION: en_ja\r\n")
+        assert event.resolved_direction == "en_ja"
+
+    def test_parse_direction_header_buffers_partial_chunks_until_newline(self):
+        parser = DirectionHeaderParser()
+        assert parser.feed("DIREC") is None
+        event = parser.feed("TION: en_ja\r\n")
+        assert event.resolved_direction == "en_ja"
+
+    def test_normalize_stt_language_handles_unknown_and_regional_codes(self):
+        assert normalize_stt_language("en-AU") == "en"
+        assert normalize_stt_language("zh-CN") is None
+        assert normalize_stt_language("") is None
+        assert normalize_stt_language(None) is None

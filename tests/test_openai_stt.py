@@ -184,6 +184,22 @@ class TestTranscription(unittest.TestCase):
         call_kwargs = client.audio.transcriptions.create.call_args
         self.assertEqual(call_kwargs.kwargs.get("model"), "whisper-1")
 
+    def test_auto_stream_uses_stt_language_metadata_when_available(self):
+        client = MagicMock()
+        response = MagicMock()
+        response.text = "Hello world"
+        response.language = "en-US"
+        client.audio.transcriptions.create.return_value = response
+
+        w, _, listen_w, _ = _make_worker(client=client)
+        w.start()
+        w.submit(b"wav_data", "listen_auto")
+        time.sleep(0.5)
+        w.stop()
+
+        self.assertEqual(len(listen_w.submitted), 1)
+        self.assertEqual(listen_w.submitted[0].stream_id, "listen_en_ja")
+
 
 class TestErrorHandling(unittest.TestCase):
     def test_api_error_produces_error_message(self):

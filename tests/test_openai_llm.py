@@ -239,6 +239,54 @@ class TestPhase0Streaming(unittest.TestCase):
                 partials.append(msg[2])
         self.assertEqual(partials, ["text"])
 
+    def test_auto_stream_strips_direction_header_and_emits_metadata(self):
+        chunks = [_make_chunk("DIRECTION: ja_en\nTRANSLATION: "), _make_chunk("Hello")]
+        client = _mock_client(chunks)
+        ui_q = queue.Queue()
+
+        worker = OpenAiLlmWorker(ui_q, client=client, min_interval_sec=0)
+        worker.start()
+        worker.submit(ApiRequest(
+            wav_bytes=None, prompt="translate", stream_id="speak_auto", phase=2,
+        ))
+        time.sleep(0.5)
+        worker.stop()
+
+        messages = []
+        while not ui_q.empty():
+            messages.append(ui_q.get_nowait())
+
+        partials = [m[2] for m in messages if m[0] == "partial"]
+        self.assertEqual("".join(partials), "Hello")
+        done = [m for m in messages if m[0] == "translation_done"][0]
+        self.assertEqual(done[1], "speak")
+        self.assertEqual(done[2], "speak_auto")
+        self.assertEqual(done[3], "ja_en")
+        self.assertEqual(done[6], "Hello")
+
+    def test_auto_stream_direction_parse_failure_emits_incomplete_result(self):
+        chunks = [_make_chunk("DIRECTION: invalid\nTRANSLATION: ???")]
+        client = _mock_client(chunks)
+        ui_q = queue.Queue()
+
+        worker = OpenAiLlmWorker(ui_q, client=client, min_interval_sec=0)
+        worker.start()
+        worker.submit(ApiRequest(
+            wav_bytes=None, prompt="translate", stream_id="listen_auto", phase=2,
+        ))
+        time.sleep(0.5)
+        worker.stop()
+
+        messages = []
+        while not ui_q.empty():
+            messages.append(ui_q.get_nowait())
+
+        done = [m for m in messages if m[0] == "translation_done"][0]
+        self.assertEqual(done[1], "listen")
+        self.assertEqual(done[2], "listen_auto")
+        self.assertIsNone(done[3])
+        self.assertEqual(done[7], "direction_parse_failed")
+
 
 class TestOpenRouterSSEComments(unittest.TestCase):
     """OpenRouter may produce chunks with empty choices list."""

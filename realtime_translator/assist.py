@@ -10,6 +10,7 @@ from typing import Any
 from .constants import STREAM_LANGS
 from .history import TranslationHistory
 from .prompts import build_reply_assist_prompt, build_minutes_prompt
+from .stream_modes import STREAM_DIRECTION_LANGS
 
 MAX_HISTORY_ENTRIES = 200
 MAX_HISTORY_CHARS = 50_000
@@ -34,6 +35,10 @@ class _StopSentinel:
     def __eq__(self, other): return isinstance(other, _StopSentinel)
 
 _STOP = _StopSentinel()
+
+
+def build_history_for_assist(entries: list) -> list:
+    return [entry for entry in entries if entry.usable_for_downstream]
 
 
 @dataclass(order=False)
@@ -165,7 +170,7 @@ class AssistWorker:
                 if client is None and self._client_factory:
                     client = self._client_factory()
 
-                entries = self._history.all_entries()
+                entries = build_history_for_assist(self._history.all_entries())
                 if not entries:
                     self._ui_queue.put((
                         "assist_error", req.request_id, req.request_type,
@@ -226,19 +231,32 @@ class AssistWorker:
     def _format_history_for_assist(entries: list) -> str:
         lines = []
         for e in entries:
-            src, dst = STREAM_LANGS[e.stream_id]
+            src, dst = AssistWorker._resolve_direction_labels(e)
             direction = f"{src}→{dst}"
-            lines.append(f"[{direction}] {e.original} → {e.translation}")
+            lines.append(AssistWorker._format_history_line(direction, e))
         return "\n".join(lines)
 
     @staticmethod
     def _format_history_for_minutes(entries: list) -> str:
         lines = []
         for e in entries:
-            src, dst = STREAM_LANGS[e.stream_id]
+            src, dst = AssistWorker._resolve_direction_labels(e)
             direction = f"{src}→{dst}"
-            lines.append(f"[{e.timestamp}] [{direction}] {e.original} → {e.translation}")
+            lines.append(AssistWorker._format_history_line(direction, e, include_timestamp=e.timestamp))
         return "\n".join(lines)
+
+    @staticmethod
+    def _resolve_direction_labels(entry) -> tuple[str, str]:
+        if entry.resolved_direction in STREAM_DIRECTION_LANGS:
+            return STREAM_DIRECTION_LANGS[entry.resolved_direction]
+        if entry.virtual_stream_id in STREAM_LANGS:
+            return STREAM_LANGS[entry.virtual_stream_id]
+        return STREAM_LANGS.get(entry.stream_id, ("?", "?"))
+
+    @staticmethod
+    def _format_history_line(direction: str, entry, include_timestamp: str | None = None) -> str:
+        prefix = f"[{include_timestamp}] " if include_timestamp else ""
+        return f"{prefix}[{direction}] {entry.original} → {entry.translation}"
 
     def _call_llm(self, client, prompt: str) -> str:
         if self._llm_backend == "gemini":

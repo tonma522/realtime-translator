@@ -397,7 +397,7 @@ class TestStrategyControllerIntegration:
         # Feed WAV through controller callback (same path as real capture)
         ctrl._capture_listen.cb(wav)
         assert len(submitted) == 1
-        assert submitted[0].stream_id == "listen"
+        assert submitted[0].stream_id == "listen_en_ja"
         assert submitted[0].phase == 0
         ctrl.stop()
 
@@ -469,7 +469,7 @@ class TestStrategyControllerIntegration:
         # Feed through callback
         ctrl._capture_speak.cb(wav)
         assert len(submitted) == 1
-        assert submitted[0].stream_id == "speak"
+        assert submitted[0].stream_id == "speak_ja_en"
         ctrl.stop()
 
 
@@ -916,3 +916,15 @@ class TestShowOriginal:
 
         app._flush_active_partials.assert_called_once()
         assert result_text.insert.call_count >= 2
+
+
+class TestStreamHeaderFormatting:
+    def test_partial_header_uses_pending_auto_label_until_direction_resolves(self):
+        from realtime_translator.app import format_stream_header
+
+        assert format_stream_header("listen", "listen_auto", None) == "PC音声 同時翻訳"
+
+    def test_resolved_header_for_speak_ja_en(self):
+        from realtime_translator.app import format_stream_header
+
+        assert format_stream_header("speak", "speak_ja_en", "ja_en") == "マイク 日本語→英語"

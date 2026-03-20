@@ -15,6 +15,7 @@ from .whisper_stt import WhisperWorker
 from .openai_llm import OpenAiLlmWorker
 from .openai_stt import OpenAiSttWorker
 from .prompts import build_prompt, build_stt_prompt
+from .stream_modes import resolve_virtual_stream_id
 from .constants import (
     GENAI_AVAILABLE,
     OPENAI_AVAILABLE,
@@ -54,6 +55,8 @@ class StartConfig:
     use_vad: bool
     request_whisper: bool
     request_two_phase: bool
+    pc_audio_mode: str = "en_ja"
+    mic_mode: str = "ja_en"
     show_original: bool = True
     whisper_model: str = "small"
     whisper_language: str | None = None
@@ -130,6 +133,8 @@ class TranslatorController:
         self._use_whisper = False
         self._stt_backend = "gemini"
         self._llm_backend = "gemini"
+        self._pc_audio_mode = "en_ja"
+        self._mic_mode = "ja_en"
 
     @property
     def is_running(self) -> bool:
@@ -210,6 +215,8 @@ class TranslatorController:
         self._use_whisper = use_whisper
         self._stt_backend = stt_backend
         self._llm_backend = llm_backend
+        self._pc_audio_mode = config.pc_audio_mode
+        self._mic_mode = config.mic_mode
         self._ptt_event.clear()
 
         try:
@@ -305,15 +312,16 @@ class TranslatorController:
                                 ("speak", config.mic_device_index)]:
             if idx is None:
                 continue
+            virtual_stream_id = self._resolve_stream_for_source(stream_id)
 
             if use_whisper:
                 def make_whisper_cb(sid: str) -> Callable[[bytes], None]:
                     return lambda wav: self._whisper_worker.submit(wav, sid)
-                cb = make_whisper_cb(stream_id)
+                cb = make_whisper_cb(virtual_stream_id)
             elif use_openai_stt:
                 def make_openai_stt_cb(sid: str) -> Callable[[bytes], None]:
                     return lambda wav: self._openai_stt_worker.submit(wav, sid)
-                cb = make_openai_stt_cb(stream_id)
+                cb = make_openai_stt_cb(virtual_stream_id)
             else:
                 def make_cb(sid: str) -> Callable[[bytes], None]:
                     return lambda wav: self.on_audio_chunk(wav, sid)
@@ -518,18 +526,23 @@ class TranslatorController:
         worker = self._api_worker_listen if stream_id == "listen" else self._api_worker_speak
         if worker is None:
             return
+        virtual_stream_id = self._resolve_stream_for_source(stream_id)
         if self._use_two_phase:
             worker.submit(ApiRequest(
                 wav_bytes=wav_bytes,
-                prompt=build_stt_prompt(stream_id),
-                stream_id=stream_id, phase=1, context=self._context,
+                prompt=build_stt_prompt(virtual_stream_id),
+                stream_id=virtual_stream_id, phase=1, context=self._context,
             ))
         else:
             worker.submit(ApiRequest(
                 wav_bytes=wav_bytes,
-                prompt=build_prompt(stream_id, self._context, self._show_original),
-                stream_id=stream_id, phase=0,
+                prompt=build_prompt(virtual_stream_id, self._context, self._show_original),
+                stream_id=virtual_stream_id, phase=0,
             ))
+
+    def _resolve_stream_for_source(self, stream_id: str) -> str:
+        mode = self._pc_audio_mode if stream_id == "listen" else self._mic_mode
+        return resolve_virtual_stream_id(stream_id, mode)
 
     def ptt_press(self) -> None:
         if self.can_ptt:

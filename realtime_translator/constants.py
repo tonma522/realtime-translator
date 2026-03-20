@@ -1,5 +1,13 @@
 """定数・設定値"""
 from pathlib import Path
+from .stream_modes import (
+    STREAM_DIRECTION_LANGS,
+    STREAM_MODE_DEFAULTS,
+    STREAM_SOURCE_LABELS,
+    STREAM_SOURCE_TAGS,
+    TRANSLATION_MODE_LABELS,
+    resolve_virtual_stream_id,
+)
 
 try:
     import pyaudiowpatch as pyaudio
@@ -66,12 +74,30 @@ OPENAI_STT_MODELS = ("whisper-1",)
 OPENAI_STT_DEFAULT_MODEL = "whisper-1"
 
 STREAM_LANGS: dict[str, tuple[str, str]] = {
-    "listen": ("英語", "日本語"),
-    "speak":  ("日本語", "英語"),
+    stream_id: STREAM_DIRECTION_LANGS[mode]
+    for stream_id, mode in STREAM_MODE_DEFAULTS.items()
 }
+STREAM_LANGS.update({
+    resolve_virtual_stream_id(stream_id, mode): STREAM_DIRECTION_LANGS[mode]
+    for stream_id in STREAM_MODE_DEFAULTS
+    for mode in TRANSLATION_MODE_LABELS
+})
 
 _PTT_BINDINGS = ("<KeyPress-space>", "<KeyRelease-space>", "<FocusOut>")
 _STREAM_META: dict[str, tuple[str, str, str]] = {
-    "listen": ("PC音声", "stream_listen", "英語→日本語"),
-    "speak":  ("マイク", "stream_speak",  "日本語→英語"),
+    stream_id: (
+        STREAM_SOURCE_LABELS[stream_id],
+        STREAM_SOURCE_TAGS[stream_id],
+        TRANSLATION_MODE_LABELS[mode],
+    )
+    for stream_id, mode in STREAM_MODE_DEFAULTS.items()
 }
+_STREAM_META.update({
+    resolve_virtual_stream_id(stream_id, mode): (
+        STREAM_SOURCE_LABELS[stream_id],
+        STREAM_SOURCE_TAGS[stream_id],
+        TRANSLATION_MODE_LABELS[mode],
+    )
+    for stream_id in STREAM_MODE_DEFAULTS
+    for mode in TRANSLATION_MODE_LABELS
+})

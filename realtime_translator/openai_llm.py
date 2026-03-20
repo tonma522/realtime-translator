@@ -7,12 +7,14 @@ from datetime import datetime
 
 from .api import ApiRequest
 from .audio_utils import wav_to_base64
+from .auto_direction import AutoTranslationParser
 from .constants import (
     API_QUEUE_MAXSIZE,
     MIN_API_INTERVAL_SEC,
     SILENCE_SENTINEL,
 )
 from .prompts import build_translation_prompt
+from .stream_modes import is_auto_stream, split_stream_id
 from .worker_utils import send_stop_sentinel
 
 # phase=0/1 で音声入力が使えるモデル (既知)
@@ -234,6 +236,10 @@ class OpenAiLlmWorker:
         started = False
         chunk_count = 0
         collected: list[str] = []
+        auto_parser = AutoTranslationParser() if is_auto_stream(req.stream_id) else None
+        source_stream_id = split_stream_id(req.stream_id)[0] if auto_parser else req.stream_id
+        output_stream_id = req.stream_id
+        resolved_direction = None
         try:
             for chunk in self._client.chat.completions.create(
                 model=self._model, messages=messages, stream=True,
@@ -246,22 +252,56 @@ class OpenAiLlmWorker:
                 text = delta.content if delta and delta.content else ""
                 if not text:
                     continue
+                if auto_parser is not None:
+                    try:
+                        auto_event = auto_parser.feed(text)
+                    except ValueError:
+                        self._ui_queue.put((
+                            "translation_done",
+                            source_stream_id,
+                            req.stream_id,
+                            None,
+                            ts,
+                            req.transcript if req.phase == 2 else "",
+                            "",
+                            "direction_parse_failed",
+                        ))
+                        return
+                    if auto_event is None:
+                        continue
+                    resolved_direction = auto_event.resolved_direction
+                    output_stream_id = f"{source_stream_id}_{resolved_direction}"
+                    text = auto_event.translation_text
+                    if not text:
+                        continue
                 if not started:
-                    self._ui_queue.put(("partial_start", req.stream_id, ts))
+                    self._ui_queue.put(("partial_start", output_stream_id, ts))
                     started = True
                 collected.append(text)
-                self._ui_queue.put(("partial", req.stream_id, text))
+                self._ui_queue.put(("partial", output_stream_id, text))
         except Exception as exc:
             logging.exception("[%s] streaming error", self._label)
-            self._ui_queue.put(("error", req.stream_id, _localize_openai_error(exc)))
+            self._ui_queue.put(("error", output_stream_id, _localize_openai_error(exc)))
         finally:
             logging.debug("[%s] stream done: %d chunks, started=%s", self._label, chunk_count, started)
             if started:
-                self._ui_queue.put(("partial_end", req.stream_id))
+                self._ui_queue.put(("partial_end", output_stream_id))
                 full_text = "".join(collected).strip()
                 if full_text:
                     original = req.transcript if req.phase == 2 else ""
-                    self._ui_queue.put(("translation_done", req.stream_id, ts, original, full_text))
+                    if auto_parser is not None:
+                        self._ui_queue.put((
+                            "translation_done",
+                            source_stream_id,
+                            req.stream_id,
+                            resolved_direction,
+                            ts,
+                            original,
+                            full_text,
+                            None,
+                        ))
+                    else:
+                        self._ui_queue.put(("translation_done", req.stream_id, ts, original, full_text))
 
     def _is_audio_capable(self) -> bool:
         """現在のモデルが音声入力に対応しているか"""

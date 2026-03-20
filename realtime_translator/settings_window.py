@@ -9,6 +9,7 @@ from .constants import (
     MIC_SILENCE_RMS_THRESHOLD,
     OPENAI_STT_MODELS,
 )
+from .stream_modes import TRANSLATION_MODE_LABELS
 
 
 class SettingsWindow:
@@ -33,6 +34,7 @@ class SettingsWindow:
         self._build_backend_section(container)
         self._build_api_section(container)
         self._build_device_section(container)
+        self._build_translation_mode_section(container)
         self._build_context_section(container)
         self._build_chunk_vad_section(container)
         self._build_threshold_section(container)
@@ -201,6 +203,32 @@ class SettingsWindow:
         else:
             self._context_text.insert(
                 "1.0", "例: 製造業の生産管理会議。BOM、リードタイム、MRP等の用語が出る。")
+
+    def _build_translation_mode_section(self, parent: ttk.Frame) -> None:
+        lf = ttk.LabelFrame(parent, text="翻訳モード")
+        lf.pack(fill="x", pady=(0, 4))
+
+        row = ttk.Frame(lf)
+        row.pack(fill="x", padx=4, pady=2)
+        values = list(TRANSLATION_MODE_LABELS.values())
+
+        ttk.Label(row, text="PC音声モード:").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(
+            row,
+            textvariable=self._app._pc_audio_mode_var,
+            values=values,
+            state="readonly",
+            width=16,
+        ).grid(row=0, column=1, padx=4)
+
+        ttk.Label(row, text="マイクモード:").grid(row=0, column=2, sticky="w", padx=(12, 0))
+        ttk.Combobox(
+            row,
+            textvariable=self._app._mic_mode_var,
+            values=values,
+            state="readonly",
+            width=16,
+        ).grid(row=0, column=3, padx=4)
 
     def _build_chunk_vad_section(self, parent: ttk.Frame) -> None:
         lf = ttk.LabelFrame(parent, text="チャンク間隔 + VAD")

@@ -10,6 +10,13 @@ class HistoryEntry:
     timestamp: str
     original: str
     translation: str
+    virtual_stream_id: str | None = None
+    resolved_direction: str | None = None
+    error: str | None = None
+
+    @property
+    def usable_for_downstream(self) -> bool:
+        return self.error is None
 
 
 class TranslationHistory:
@@ -20,7 +27,16 @@ class TranslationHistory:
         self._next_seq = 1
         self._lock = threading.Lock()
 
-    def append(self, stream_id: str, timestamp: str, original: str, translation: str) -> HistoryEntry:
+    def append(
+        self,
+        stream_id: str,
+        timestamp: str,
+        original: str,
+        translation: str,
+        virtual_stream_id: str | None = None,
+        resolved_direction: str | None = None,
+        error: str | None = None,
+    ) -> HistoryEntry:
         with self._lock:
             entry = HistoryEntry(
                 seq=self._next_seq,
@@ -28,6 +44,9 @@ class TranslationHistory:
                 timestamp=timestamp,
                 original=original,
                 translation=translation,
+                virtual_stream_id=virtual_stream_id or stream_id,
+                resolved_direction=resolved_direction,
+                error=error,
             )
             self._entries.append(entry)
             self._next_seq += 1

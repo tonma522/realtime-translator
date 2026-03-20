@@ -82,3 +82,24 @@ class TestTranslationHistory:
         assert isinstance(entry, HistoryEntry)
         assert entry.seq == 1
         assert entry.stream_id == "listen"
+
+    def test_append_populates_history_contract_fields(self):
+        h = TranslationHistory()
+        entry = h.append("listen", "12:00:00", "Hello", "こんにちは")
+        assert entry.virtual_stream_id == "listen"
+        assert entry.resolved_direction is None
+        assert entry.error is None
+        assert entry.usable_for_downstream is True
+
+    def test_direction_parse_failed_is_not_usable_for_downstream(self):
+        entry = HistoryEntry(
+            seq=1,
+            stream_id="listen",
+            virtual_stream_id="listen_auto",
+            resolved_direction=None,
+            timestamp="12:00:00",
+            original="Hello",
+            translation="",
+            error="direction_parse_failed",
+        )
+        assert entry.usable_for_downstream is False

@@ -10,6 +10,7 @@ from typing import Any
 from .constants import STREAM_LANGS
 from .history import TranslationHistory
 from .prompts import build_retranslation_prompt
+from .stream_modes import STREAM_DIRECTION_LANGS
 from .worker_utils import send_stop_sentinel
 
 
@@ -127,10 +128,12 @@ class RetranslationWorker:
         entry = self._history.get_by_seq(req.center_seq)
         if entry is None:
             raise ValueError(f"履歴エントリ #{req.center_seq} が見つかりません")
+        if not entry.usable_for_downstream:
+            raise ValueError(entry.error or "再翻訳対象外の履歴エントリです")
 
         entries = self._history.get_range(req.center_seq, req.n_surrounding, req.n_surrounding)
         history_block = self._format_history_block(entries, req.center_seq)
-        prompt = build_retranslation_prompt(entry.stream_id, req.context, history_block)
+        prompt = build_retranslation_prompt(self._resolve_prompt_stream_id(entry), req.context, history_block)
 
         if self._llm_backend == "gemini":
             return self._call_gemini(client, prompt)
@@ -140,11 +143,27 @@ class RetranslationWorker:
     def _format_history_block(self, entries: list, center_seq: int) -> str:
         lines = []
         for e in entries:
-            src, dst = STREAM_LANGS[e.stream_id]
+            if not e.usable_for_downstream:
+                continue
+            src, dst = self._resolve_direction_labels(e)
             direction = f"{src}→{dst}"
             marker = ">>>" if e.seq == center_seq else "   "
             lines.append(f"{marker} [{direction}] {e.original} → {e.translation}")
         return "\n".join(lines)
+
+    def _resolve_prompt_stream_id(self, entry) -> str:
+        if entry.resolved_direction in STREAM_DIRECTION_LANGS:
+            return f"{entry.stream_id}_{entry.resolved_direction}"
+        if entry.virtual_stream_id:
+            return entry.virtual_stream_id
+        return entry.stream_id
+
+    def _resolve_direction_labels(self, entry) -> tuple[str, str]:
+        if entry.resolved_direction in STREAM_DIRECTION_LANGS:
+            return STREAM_DIRECTION_LANGS[entry.resolved_direction]
+        if entry.virtual_stream_id in STREAM_LANGS:
+            return STREAM_LANGS[entry.virtual_stream_id]
+        return STREAM_LANGS.get(entry.stream_id, ("?", "?"))
 
     def _call_gemini(self, client, prompt: str) -> str:
         from .api import _generate_config_for_model
